@@ -1,4 +1,8 @@
+import os
+
 from fastapi import FastAPI, Request
+from sqlalchemy import text
+from app.api.dependencies import Db
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import CORS_ORIGINS
 from fastapi.exceptions import RequestValidationError
@@ -46,6 +50,13 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 def health() -> dict[str, str]:
     """Report process liveness without requiring database availability."""
     return {'status': 'ok'}
+
+
+@app.get('/api/ready', tags=['health'])
+def ready(db: Db) -> dict[str, str]:
+    """Verify DB connectivity and identify the exact application release after deployment."""
+    db.execute(text('SELECT 1'))
+    return {'status': 'ok', 'revision': os.getenv('OSORI_RELEASE', 'development')}
 
 
 @app.exception_handler(HTTPException)
