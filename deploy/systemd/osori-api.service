@@ -1,0 +1,26 @@
+[Unit]
+Description=Osori FastAPI backend
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=osori
+Group=osori
+WorkingDirectory=/opt/osori-backend/current
+EnvironmentFile=/etc/osori-backend.env
+EnvironmentFile=/opt/osori-backend/current/.release.env
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/osori-backend/current/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2 --no-proxy-headers
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=45
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+StateDirectory=osori-backend
+
+[Install]
+WantedBy=multi-user.target
