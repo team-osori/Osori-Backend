@@ -35,7 +35,7 @@ QUESTION_GENERATION_MODEL=global.anthropic.claude-haiku-4-5-20251001-v1:0
 - 사용자당 공통 `AUTH_RATE_WINDOW_SECONDS`(기본 60초)당 최대 10회입니다. 실패·재사용 요청도 요청 횟수에 포함합니다. 한 번의 생성은 입력 512KiB, 응답 2MiB, 연결 5초·응답 읽기 55초로 제한하고 자동 재시도하지 않습니다. 대량 생성이 시간/출력 제한에 걸리면 문항 수를 줄여 새 요청을 보냅니다.
 - 정책 원문을 Amazon Bedrock에 전송합니다. 지정한 도구 입력으로 JSON 결과를 받고 서버에서 검증하며 도구를 실행하지 않습니다. 입력 문서 안의 지시를 실행하지 않도록 지시하고 출력은 정책 원문과 다시 대조합니다. 문자열 일치 검사는 의미적 타당성을 보장하지 않습니다.
 
-주요 오류: `GENERATION_NOT_CONFIGURED`(503), `GENERATION_AUTH_FAILED`(503), `GENERATION_RATE_LIMITED`(503), `GENERATION_UNAVAILABLE`(503), `GENERATION_TIMEOUT`(504), `GENERATION_INCOMPLETE`(502), `GENERATION_REFUSED`(502), `INVALID_GENERATION_OUTPUT`(502), `GENERATION_INPUT_TOO_LARGE`(400), 사용자 요청 제한 `RATE_LIMITED`(429, Retry-After).
+주요 오류: `GENERATION_NOT_CONFIGURED`(503), `GENERATION_AUTH_FAILED`(503), `GENERATION_RATE_LIMITED`(503), `GENERATION_UNAVAILABLE`(503), `GENERATION_TIMEOUT`(504), `GENERATION_INCOMPLETE`(502), `GENERATION_REFUSED`(502), `GENERATION_SCHEMA_INVALID`(502), `GENERATION_COUNT_MISMATCH`(502), `GENERATION_CATEGORY_MISMATCH`(502), `GENERATION_EVIDENCE_INVALID`(502), `GENERATION_CONDITIONS_INVALID`(502), `GENERATION_DUPLICATE_QUESTIONS`(502), `GENERATION_INPUT_TOO_LARGE`(400), 사용자 요청 제한 `RATE_LIMITED`(429, Retry-After).
 
 ## 기대 조건
 
@@ -94,3 +94,11 @@ QUESTION_GENERATION_MODEL=global.anthropic.claude-haiku-4-5-20251001-v1:0
 API 흐름·조건 출처·ID 검증·이력 보존·동시 수정·확정본 불변성·생성 오류/할당량·IAM 역할 기반 연결 설정 전달을 검증합니다. 실제 모델 호출은 별도 가상 정책 3문항(normal/exception/boundary)으로 확인하며 일반 테스트에서는 외부 API를 호출하지 않습니다.
 
 참고: [Bedrock Converse](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-runtime/client/converse.html), [서버 IAM 역할](https://docs.aws.amazon.com/boto3/latest/guide/credentials.html#iam-roles).
+
+### 생성 실패 진단 (#17)
+
+502는 형식, 개수, 유형, 정책 근거, 기대 조건, 중복 질문으로 구분합니다. 모델 원문·정책 내용·키는 오류에 넣지 않습니다. 실패 시 문항·이력·revision·멱등 응답은 저장하지 않습니다. `count < len(categories)` 또는 중복 유형은 모델 호출 전에 400입니다.
+
+생성된 `evidenceQuote`는 공백·탭·줄바꿈의 차이만 허용하며 저장 시 실제 정책 원문의 연속 구간으로 복원합니다. 숫자·문장부호·단어·규칙 key·정책 버전은 완화하지 않습니다. 수동 입력과 정책 `sourceQuote`는 그대로 원문 일치를 요구합니다.
+
+실패한 호출도 분당 10회 제한에 포함합니다. 제공사에서 비용이 발생한 실패를 무제한 재시도하지 않도록 기존 상한을 유지하며, 429의 `Retry-After` 이후 재시도합니다. 실제 배포 실패의 원인은 새 오류 코드로 확인해야 하며, 로컬 테스트는 제공사 대역만 사용했습니다.

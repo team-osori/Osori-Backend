@@ -43,9 +43,9 @@ def test_responses_request_and_structured_batch(monkeypatch):
 @pytest.mark.parametrize('result,code', [
     ({'status': 'incomplete'}, 'GENERATION_INCOMPLETE'),
     ({'status': 'completed', 'output': [{'type': 'message', 'content': [{'type': 'refusal', 'refusal': 'private-data'}]}]}, 'GENERATION_REFUSED'),
-    (completed([candidate('exception')]), 'INVALID_GENERATION_OUTPUT'),
-    (completed([candidate(), candidate()]), 'INVALID_GENERATION_OUTPUT'),
-    ({'status': 'completed', 'output': []}, 'INVALID_GENERATION_OUTPUT'),
+    (completed([candidate('exception')]), 'GENERATION_CATEGORY_MISMATCH'),
+    (completed([candidate(), candidate()]), 'GENERATION_COUNT_MISMATCH'),
+    ({'status': 'completed', 'output': []}, 'GENERATION_SCHEMA_INVALID'),
 ])
 def test_invalid_or_refused_results_are_not_saved(monkeypatch, result, code):
     generator = OpenAIQuestionGenerator('private-data')

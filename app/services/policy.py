@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 from copy import deepcopy
 from datetime import UTC
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -86,11 +87,27 @@ def legacy_conditions(payload, question_id):
              'kind': kind, 'category': 'policy', **source} for index, (kind, text) in enumerate(behaviors)]
 
 
-def question_payload(db, project_id, version, body: QuestionBody, *, previous=None):
+def source_quote(quote, content, *, normalize_whitespace=False):
+    """Restore the exact source span, allowing only whitespace differences in model output."""
+    if quote in content or not normalize_whitespace:
+        return quote
+    # Preserve word boundaries: absent whitespace is not equivalent to a space.
+    words = re.split(r'\s+', quote.strip())
+    if not words or not words[0]:
+        return quote
+    match = re.search(r'\s+'.join(re.escape(word) for word in words), content)
+    if match and len(match.group()) <= 10000:
+        return match.group()
+    return quote
+
+
+def question_payload(db, project_id, version, body: QuestionBody, *, previous=None, generated=False):
     """Require explicit source version, valid rules and a verbatim policy passage."""
     if body.policyVersionId not in version.policy_version_ids:
         raise ApiError(400, 'INVALID_POLICY_REFERENCE', '테스트셋에 포함된 정책 버전을 선택하세요.')
     policy = policy_versions(db, project_id, [body.policyVersionId], allow_deleted=True)[0]
+    body = body.model_copy(deep=True)
+    body.evidenceQuote = source_quote(body.evidenceQuote, policy.content, normalize_whitespace=generated)
     keys = {rule['key'] for rule in policy.rules}
     if len(set(body.ruleKeys)) != len(body.ruleKeys) or not set(body.ruleKeys) <= keys or body.evidenceQuote not in policy.content:
         raise ApiError(400, 'INVALID_POLICY_EVIDENCE', '규칙 또는 근거 원문을 확인해 주세요.')
@@ -126,6 +143,8 @@ def question_payload(db, project_id, version, body: QuestionBody, *, previous=No
         if source is None:
             raise ApiError(400, 'INVALID_POLICY_REFERENCE', '조건의 정책 버전을 확인하세요.')
         rule_keys = condition['ruleKeys']
+        condition['evidenceQuote'] = source_quote(condition['evidenceQuote'], source.content,
+                                                  normalize_whitespace=generated)
         if (len(rule_keys) != len(set(rule_keys)) or not set(rule_keys) <= {r['key'] for r in source.rules}
                 or condition['evidenceQuote'] not in source.content):
             raise ApiError(400, 'INVALID_POLICY_EVIDENCE', '조건의 규칙 또는 근거 원문을 확인하세요.')
