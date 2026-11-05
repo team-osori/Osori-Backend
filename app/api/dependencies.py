@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.errors import ApiError
 from app.models.auth import User
-from app.models.project import Chatbot, Project
+from app.models.project import Chatbot, Project, ProjectMember
 from app.services.auth import user_from_access
 
 bearer = HTTPBearer(auto_error=False)
@@ -32,13 +32,29 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 
 def require_project_owner(projectId: ResourceId, user: CurrentUser, db: Db) -> Project:
     """Hide missing and other-owned projects behind the same not-found response."""
-    project = db.scalar(select(Project).where(Project.id == projectId, Project.owner_id == user.id))
-    if project is None:
+    project = db.scalar(select(Project).where(Project.id == projectId, Project.deleted_at.is_(None)))
+    if project is None or project_role(db, project, user.id) is None:
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '프로젝트를 찾을 수 없습니다.')
     return project
 
 
 OwnedProject = Annotated[Project, Depends(require_project_owner)]
+
+
+def project_role(db, project, user_id):
+    if project.owner_id == user_id:
+        return 'admin'
+    return db.scalar(select(ProjectMember.role).where(ProjectMember.project_id == project.id,
+        ProjectMember.user_id == user_id, ProjectMember.status == 'active'))
+
+
+def require_project_admin(project: OwnedProject, user: CurrentUser, db: Db):
+    if project_role(db, project, user.id) != 'admin':
+        raise ApiError(403, 'ADMIN_REQUIRED', '프로젝트 관리자 권한이 필요합니다.')
+    return project
+
+
+AdminProject = Annotated[Project, Depends(require_project_admin)]
 
 
 def require_service_owner(serviceId: ResourceId, project: OwnedProject, db: Db) -> Chatbot:

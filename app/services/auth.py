@@ -36,13 +36,15 @@ def user_data(user: User) -> dict:
     if created.tzinfo is None:
         created = created.replace(tzinfo=UTC)
     return {'id': user.id, 'loginId': user.login_id, 'name': user.name,
-            'createdAt': created.isoformat().replace('+00:00', 'Z')}
+            'createdAt': created.isoformat().replace('+00:00', 'Z'), 'email': None,
+            'lastSeenAt': user.last_seen_at.replace(tzinfo=UTC).isoformat().replace('+00:00', 'Z') if user.last_seen_at else None}
 
 
 def create_session(db: Session, user: User) -> dict:
     """Persist a new token pair with a fixed maximum lifetime and no refresh history."""
     access, refresh = new_token(), new_token()
     current = now()
+    user.last_seen_at = current
     absolute = current + timedelta(days=AUTH_SESSION_MAX_DAYS)
     db.add(AuthSession(id=str(uuid4()), user_id=user.id, access_hash=digest(access),
                        refresh_hash=digest(refresh),
@@ -95,6 +97,10 @@ def revoke(db: Session, token: str) -> bool:
 
 def user_from_access(db: Session, token: str) -> User | None:
     """Resolve a bearer token only while both its access and absolute session deadlines are valid."""
-    return db.scalar(select(User).join(AuthSession, AuthSession.user_id == User.id).where(
+    user = db.scalar(select(User).join(AuthSession, AuthSession.user_id == User.id).where(
         AuthSession.access_hash == digest(token), AuthSession.access_expires_at > now(),
         AuthSession.absolute_expires_at > now()))
+    if user and (user.last_seen_at is None or user.last_seen_at.replace(tzinfo=UTC) < now() - timedelta(minutes=5)):
+        user.last_seen_at = now()
+        db.commit()
+    return user

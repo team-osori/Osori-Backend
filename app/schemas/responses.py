@@ -19,6 +19,8 @@ class UserResponse(BaseModel):
     loginId: str
     name: str
     createdAt: str
+    email: None = None
+    lastSeenAt: str | None = None
 
 
 class TokenPair(BaseModel):
@@ -74,4 +76,4 @@ class ErrorResponse(BaseModel):
     error: ErrorDetail
 
 
-ERROR_RESPONSES = {status: {'model': ErrorResponse} for status in (400, 401, 404, 409, 412, 413, 415, 428, 429, 500, 502, 503, 504)}
+ERROR_RESPONSES = {status: {'model': ErrorResponse} for status in (400, 401, 403, 404, 409, 412, 413, 415, 428, 429, 500, 502, 503, 504)}

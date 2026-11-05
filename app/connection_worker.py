@@ -15,6 +15,7 @@ from app.core.concurrency import is_write_conflict
 from app.core.secrets import decrypt_secret
 from app.models import auth, project, prompt  # noqa: F401: register referenced tables
 from app.models.connection import Connection, ConnectionTest
+from app.models.project import Chatbot, Project
 from app.services.auth import now
 from app.services.chatbot_gateway import execute_chatbot, GatewayResult
 from app.services.prompts import get_version
@@ -37,7 +38,7 @@ async def process_one(factory=SessionLocal, *, sender=None) -> bool:
     """Claim with compare-and-swap so multiple workers cannot execute one job twice."""
     expire_abandoned_jobs(factory)
     with factory() as db:
-        job_id = db.scalar(select(ConnectionTest.id).where(ConnectionTest.status == 'QUEUED')
+        job_id = db.scalar(select(ConnectionTest.id).join(Chatbot, Chatbot.id == ConnectionTest.service_id).join(Project, Project.id == Chatbot.project_id).where(ConnectionTest.status == 'QUEUED', Project.deleted_at.is_(None))
                            .order_by(ConnectionTest.created_at, ConnectionTest.id).limit(1))
         if job_id is None:
             return False
@@ -55,12 +56,14 @@ async def process_one(factory=SessionLocal, *, sender=None) -> bool:
     try:
         with factory() as db:
             job = db.get(ConnectionTest, job_id)
+            if job is None or job.status != 'RUNNING':
+                return True
             c = db.get(Connection, job.connection_id)
             if c is None or c.revision != job.connection_revision:
                 raise ApiError(409, 'CONNECTION_CHANGED', '접수 후 연동 설정이 변경되었습니다.')
             config = deepcopy(c.config)
             secret = decrypt_secret(c.secret_ciphertext) if c.secret_ciphertext else None
-            content = get_version(db, job.service_id, job.prompt_version_id).content if job.prompt_version_id else None
+            content = get_version(db, job.service_id, job.prompt_version_id, allow_deleted=True).content if job.prompt_version_id else None
             question = job.question
         result = await execute_chatbot(config, question, content, secret, sender=sender)
     except ApiError as exc:

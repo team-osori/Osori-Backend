@@ -69,6 +69,10 @@ class Revision(Input):
     expectedRevision: RevisionNumber
 
 
+class Rename(Revision):
+    name: Name
+
+
 class TestSetCreate(Input):
     name: Name
     policyVersionIds: Annotated[list[Id], Field(min_length=1, max_length=20)]

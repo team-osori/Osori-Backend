@@ -58,7 +58,9 @@ def test_policy_upgrade_preserves_existing_prompt_data(tmp_path):
         conn.execute(User.__table__.insert().values(id='u', login_id='owner', name='Owner', password_hash='test-hash', created_at=current))
         conn.execute(Project.__table__.insert().values(id='p', owner_id='u', name='Project', revision=1, created_at=current, updated_at=current))
         conn.execute(Chatbot.__table__.insert().values(id='s', project_id='p', name='Chatbot', revision=1, created_at=current, updated_at=current))
-        conn.execute(Prompt.__table__.insert().values(id='prompt', service_id='s', name='Existing', revision=1, current_version_id='pv', created_at=current, updated_at=current))
+        from sqlalchemy import Table, MetaData
+        legacy_prompt = Table('prompts', MetaData(), autoload_with=conn)
+        conn.execute(legacy_prompt.insert().values(id='prompt', service_id='s', name='Existing', revision=1, current_version_id='pv', created_at=current, updated_at=current))
         conn.execute(PromptVersion.__table__.insert().values(id='pv', prompt_id='prompt', version=1, content='기존 프롬프트 원문', created_at=current))
     subprocess.run([sys.executable, '-m', 'alembic', 'upgrade', 'head'], cwd=root, env=env, check=True)
     with engine.connect() as conn:

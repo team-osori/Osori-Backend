@@ -21,7 +21,7 @@ def project_progress(db, project_ids):
             order_by=(TestSetVersion.created_at.desc(), TestSetVersion.version.desc(), TestSetVersion.id.desc())).label('rank'),
         func.max(case((TestSetVersion.status == 'confirmed', 1), else_=0))
             .over(partition_by=TestSet.project_id).label('confirmed'))\
-        .join(TestSet, TestSet.id == TestSetVersion.testset_id).where(TestSet.project_id.in_(project_ids)).subquery()
+        .join(TestSet, TestSet.id == TestSetVersion.testset_id).where(TestSet.project_id.in_(project_ids), TestSet.deleted.is_(False)).subquery()
     latest_versions = db.execute(select(versions).where(versions.c.rank == 1)).all()
     counts = dict(db.execute(select(TestQuestion.testset_version_id, func.count(TestQuestion.id))
         .where(TestQuestion.testset_version_id.in_([row.id for row in latest_versions]))

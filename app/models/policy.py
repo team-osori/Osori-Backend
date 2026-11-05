@@ -38,6 +38,7 @@ class TestSet(Base):
     name: Mapped[str] = mapped_column(String(100))
     revision: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default='0')
 
 
 class TestSetVersion(Base):

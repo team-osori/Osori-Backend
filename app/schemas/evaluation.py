@@ -136,12 +136,35 @@ class EvaluationRerun(BaseModel):
     promptVersionId: Id | None = None
 
 
+class EvaluationAction(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+
+class EvaluationResume(EvaluationAction):
+    connectionRevision: Annotated[int, Field(strict=True, ge=1, le=2**31 - 1)]
+
+
+class AnalysisCapability(BaseModel):
+    supported: bool
+    reason: str
+
+
+class AnalysisCapabilities(BaseModel):
+    causeClassification: AnalysisCapability
+    causeHypotheses: AnalysisCapability
+    promptSuggestions: AnalysisCapability
+    promptDiff: AnalysisCapability
+    interRaterAgreement: AnalysisCapability
+    unstableQuestions: AnalysisCapability
+    fixableQuestionCount: AnalysisCapability
+
+
 class EvaluationResponse(BaseModel):
     id: str
     serviceId: str
     mode: Literal['SINGLE', 'COMPARE'] = 'COMPARE'
     sourceEvaluationId: str | None = None
-    status: Literal['QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED']
+    status: Literal['QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED']
     totalQuestions: int
     completedQuestions: int
     failedQuestions: int

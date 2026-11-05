@@ -14,8 +14,10 @@ def cleanup_expired(db):
     sessions = db.execute(delete(AuthSession).where(or_(AuthSession.refresh_expires_at <= current, AuthSession.absolute_expires_at <= current))).rowcount
     counters = db.execute(delete(AuthRateWindow).where(AuthRateWindow.window_start < int(current.timestamp()) - 86400)).rowcount
     generations = db.execute(delete(GenerationRequest).where(GenerationRequest.expires_at <= current)).rowcount
+    from app.services.project_lifecycle import purge_expired_projects
+    projects = purge_expired_projects(db)
     db.commit()
-    return {'sessions': sessions, 'rateWindows': counters, 'generationRequests': generations}
+    return {'sessions': sessions, 'rateWindows': counters, 'generationRequests': generations, 'projects': projects}
 
 
 if __name__ == '__main__':

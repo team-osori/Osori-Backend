@@ -39,7 +39,7 @@ def policy_row(db, project_id, policy_id):
 
 def testset_row(db, project_id, testset_id):
     """Resolve a test set without exposing a different project's resources."""
-    row = db.scalar(select(TestSet).where(TestSet.id == testset_id, TestSet.project_id == project_id))
+    row = db.scalar(select(TestSet).where(TestSet.id == testset_id, TestSet.project_id == project_id, TestSet.deleted.is_(False)))
     if row is None:
         raise not_found()
     return row
@@ -233,7 +233,8 @@ def version_data(db, row):
 
 def get_evaluation_snapshot(db, project_id, version_id):
     """Return frozen inputs for an already authorized project; never accept a draft for evaluation."""
-    row = db.scalar(select(TestSetVersion).join(TestSet).where(TestSet.project_id == project_id, TestSetVersion.id == version_id))
+    row = db.scalar(select(TestSetVersion).join(TestSet).where(TestSet.project_id == project_id,
+        TestSet.deleted.is_(False), TestSetVersion.id == version_id))
     if row is None:
         raise not_found()
     if row.status != 'confirmed' or row.snapshot is None:

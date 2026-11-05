@@ -206,3 +206,11 @@ OSORI_TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/osori_test?ch
 - `ConnectionPut.executionMode`는 `PROMPT_BODY/CONNECTION_ONLY` enum입니다. 연결 테스트의 `promptVersionId`는 PROMPT_BODY일 때 필수입니다.
 
 CI에서 OpenAPI 구조와 실제 API 응답·필터 동작을 회귀 검사합니다(`tests/test_openapi_contract.py` 및 평가 API 테스트).
+
+## 평가 중단·재개와 분석 지원 상태 (#20)
+
+`POST …/evaluations/{evaluationId}/cancel`에 `{}`를 보내면 QUEUED/RUNNING 평가를 `CANCELLED`로 바꿉니다. 같은 중단은 멱등이며 종료된 다른 평가는 409입니다. 기존 결과는 보존하고 현재 호출 중인 항목은 INTERRUPTED, 미호출 항목은 NOT_RUN으로 구분합니다. 워커 lease를 바꿔 늦은 응답의 쓰기를 차단하고 실행 중 비동기 호출 대기를 취소합니다. **외부 기업 서버가 이미 받은 요청의 실행까지 취소됨을 보장하지는 않습니다.**
+
+`POST …/evaluations/{evaluationId}/resume`에 `{"connectionRevision":N}`을 보내면 같은 평가에서 NOT_RUN인 측만 QUEUED로 재개합니다. 저장된 성공/실패나 INTERRUPTED 호출은 중복 실행하지 않습니다. 남은 미호출 항목이 없으면 `409 NO_PENDING_QUESTIONS`, 연동 revision·설정·판정 모델이 달라지면 `409 COMPARISON_CONFIGURATION_CHANGED`입니다. 재개한 마지막 항목까지 처리한 후 전체 결과에 따라 COMPLETED/PARTIAL_FAILED/FAILED로 끝납니다. 원문 스냅샷과 기존 사람 검토는 유지합니다.
+
+`GET …/evaluations/capabilities`는 각 분석 기능의 `supported/reason`을 반환합니다. 현재는 근거가 있을 때 원인 **가설**을 지원하며, 확정 원인 분류·프롬프트 수정안/diff·독립 채점자 일치도·반복 실행 불안정성·수정 효과 예측 개수는 미지원으로 명시합니다. 프론트는 미지원 영역을 숨기거나 사유를 표시하고 임의 숫자를 채우지 않습니다. 이는 프로젝트별 멤버 구현과 함께 합의한 현재 범위입니다.

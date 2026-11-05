@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import timedelta
 import logging
 import signal
+import time
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
@@ -14,6 +15,7 @@ from app.core.database import SessionLocal
 from app.core.secrets import decrypt_secret
 from app.models import auth, project, prompt, policy  # noqa: F401 - referenced tables
 from app.models.evaluation import Evaluation, EvaluationItem
+from app.models.project import Chatbot, Project
 from app.schemas.evaluation import Evidence, Judgement
 from app.services.auth import now
 from app.services.chatbot_gateway import execute_chatbot
@@ -189,12 +191,30 @@ def locked_run(db, run_id, token):
         Evaluation.lease_token == token).with_for_update())
 
 
+async def execute_cancellable(factory, run_id, token, inputs, question, side, secret, judge, sender):
+    task = asyncio.create_task(execute_side(inputs, question, side, secret, judge, sender))
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=0.25)
+            with factory() as db:
+                active = db.scalar(select(Evaluation.id).where(Evaluation.id == run_id,
+                    Evaluation.status == 'RUNNING', Evaluation.lease_token == token))
+            if active is None:
+                return None
+            if done:
+                return await task
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def process_one(factory=SessionLocal, *, sender=None, judge=None, stop_event=None):
     """Claim one run atomically, persist each response, and keep unrelated question failures isolated."""
     expire_abandoned(factory)
     token = uid()
     with factory() as db:
-        id_ = db.scalar(select(Evaluation.id).where(Evaluation.status == 'QUEUED').order_by(Evaluation.created_at, Evaluation.id).limit(1))
+        id_ = db.scalar(select(Evaluation.id).join(Chatbot, Chatbot.id == Evaluation.service_id).join(Project, Project.id == Chatbot.project_id).where(Evaluation.status == 'QUEUED', Project.deleted_at.is_(None)).order_by(Evaluation.created_at, Evaluation.id).limit(1))
         if id_ is None:
             return False
         try:
@@ -210,7 +230,9 @@ async def process_one(factory=SessionLocal, *, sender=None, judge=None, stop_eve
             return True
     judge = judge or get_evaluation_judge()
     with factory() as db:
-        row = db.get(Evaluation, id_)
+        row = locked_run(db, id_, token)
+        if row is None:
+            return True
         inputs = deepcopy(row.inputs)
         item_ids = db.scalars(select(EvaluationItem.id).where(EvaluationItem.evaluation_id == id_)
                               .order_by(EvaluationItem.created_at, EvaluationItem.id)).all()
@@ -235,24 +257,29 @@ async def process_one(factory=SessionLocal, *, sender=None, judge=None, stop_eve
             if row is None:
                 return True
             item = db.get(EvaluationItem, item_id)
-            item.status = 'RUNNING'
-            # Persist intent before A; B is explicitly known to be unstarted.
-            item.a = pending_side('RUNNING', item.question_id, inputs=inputs, question=item.input)
-            item.b = pending_side('NOT_RUN', item.question_id, inputs=inputs, question=item.input) if 'b' in side_names(inputs) else None
+            if item.status in ('COMPLETED', 'FAILED', 'INTERRUPTED'):
+                continue
             question = deepcopy(item.input)
+            for side in side_names(inputs):
+                if getattr(item, side) is None:
+                    setattr(item, side, pending_side('NOT_RUN', item.question_id, inputs=inputs, question=item.input))
+            item.status = 'RUNNING'
             row.heartbeat_at = now()
             db.commit()
         for side in side_names(inputs):
-            if side == 'b':
-                with factory() as db:
-                    row = locked_run(db, id_, token)
-                    if row is None:
-                        return True
-                    item = db.get(EvaluationItem, item_id)
-                    item.b = pending_side('RUNNING', item.question_id, inputs=inputs, question=item.input)
-                    row.heartbeat_at = now()
-                    db.commit()
-            outcome = await execute_side(inputs, question, side, secret, judge, sender)
+            with factory() as db:
+                row = locked_run(db, id_, token)
+                if row is None:
+                    return True
+                item = db.get(EvaluationItem, item_id)
+                if getattr(item, side)['callStatus'] != 'NOT_RUN':
+                    continue
+                setattr(item, side, pending_side('RUNNING', item.question_id, inputs=inputs, question=item.input))
+                row.heartbeat_at = now()
+                db.commit()
+            outcome = await execute_cancellable(factory, id_, token, inputs, question, side, secret, judge, sender)
+            if outcome is None:
+                return True
             with factory() as db:
                 row = locked_run(db, id_, token)
                 if row is None:
@@ -260,12 +287,19 @@ async def process_one(factory=SessionLocal, *, sender=None, judge=None, stop_eve
                 item = db.get(EvaluationItem, item_id)
                 setattr(item, side, outcome)
                 row.heartbeat_at = now()
-                if side == side_names(inputs)[-1]:
-                    sides = [getattr(item, name) for name in side_names(inputs)]
-                    item.status = 'FAILED' if any(s['callStatus'] == 'FAILED' for s in sides) else 'COMPLETED'
-                    row.completed_questions += 1
-                    row.failed_questions += int(item.status == 'FAILED')
                 db.commit()
+        with factory() as db:
+            row = locked_run(db, id_, token)
+            if row is None:
+                return True
+            item = db.get(EvaluationItem, item_id)
+            statuses = [getattr(item, side)['callStatus'] for side in side_names(inputs)]
+            item.status = 'COMPLETED' if all(status == 'SUCCEEDED' for status in statuses) else (
+                'FAILED' if 'FAILED' in statuses else 'INTERRUPTED')
+            row.completed_questions += 1
+            row.failed_questions += int(item.status in ('FAILED', 'INTERRUPTED'))
+            db.commit()
+
     with factory() as db:
         row = locked_run(db, id_, token)
         if row:
@@ -280,8 +314,14 @@ async def run(once=False):
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stop.set)
+    last_cleanup = None
     while not stop.is_set():
         try:
+            if last_cleanup is None or time.monotonic() - last_cleanup >= 3600:
+                from app.maintenance import cleanup_expired
+                with SessionLocal() as db:
+                    cleanup_expired(db)
+                last_cleanup = time.monotonic()
             worked = await process_one(stop_event=stop)
         except OperationalError:
             logging.getLogger(__name__).error('Evaluation worker database temporarily unavailable')

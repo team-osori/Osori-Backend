@@ -4,7 +4,7 @@ from fastapi import APIRouter, Response
 from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 
-from app.api.dependencies import Db, OwnedService, ResourceId
+from app.api.dependencies import Db, IfMatch, OwnedService, ResourceId
 from app.api.projects import iso
 from app.core.errors import ApiError
 from app.core.concurrency import is_write_conflict
@@ -12,6 +12,7 @@ from app.core.pagination import Cursor, Limit, page_query
 from app.models.prompt import Prompt, PromptVersion
 from app.schemas.prompt import (PromptCreate, PromptResponse, PromptSummary,
     PromptVersionCreate, PromptVersionResponse, PromptVersionSummary)
+from app.schemas.policy import Rename
 from app.schemas.responses import Data, ERROR_RESPONSES, Page
 from app.services.auth import now
 from app.services.prompts import get_prompt, get_version
@@ -57,10 +58,11 @@ def create_prompt(body: PromptCreate, service: OwnedService, db: Db, response: R
 
 @router.get('', response_model=Data[Page[PromptSummary]])
 def list_prompts(service: OwnedService, db: Db, limit: Limit = 20, cursor: Cursor = None):
-    rows, next_cursor = page_query(db, select(Prompt).where(Prompt.service_id == service.id),
+    rows, next_cursor = page_query(db, select(Prompt).where(Prompt.service_id == service.id, Prompt.deleted.is_(False)),
                                   Prompt, f'prompts:{service.id}', limit, cursor)
+    version_numbers = dict(db.execute(select(PromptVersion.id, PromptVersion.version).where(PromptVersion.id.in_([p.current_version_id for p in rows]))).all())
     return {'data': {'items': [{'id': p.id, 'name': p.name, 'currentVersionId': p.current_version_id,
-        'version': p.revision, 'revision': p.revision, 'createdAt': iso(p.created_at),
+        'version': version_numbers[p.current_version_id], 'revision': p.revision, 'createdAt': iso(p.created_at),
         'updatedAt': iso(p.updated_at)} for p in rows], 'nextCursor': next_cursor}}
 
 
@@ -82,7 +84,7 @@ def create_version(promptId: ResourceId, body: PromptVersionCreate, service: Own
     version = new_version(body, prompt.id, previous.version + 1)
     try:
         changed = db.execute(update(Prompt).where(Prompt.id == prompt.id,
-            Prompt.current_version_id == body.baseVersionId).values(current_version_id=version.id,
+            Prompt.current_version_id == body.baseVersionId, Prompt.deleted.is_(False)).values(current_version_id=version.id,
             revision=Prompt.revision + 1, updated_at=now()))
     except OperationalError as exc:
         db.rollback()
@@ -115,3 +117,30 @@ def version_detail(promptId: ResourceId, promptVersionId: ResourceId, service: O
     if version.prompt_id != promptId:
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '프롬프트 버전을 찾을 수 없습니다.')
     return {'data': version_data(version)}
+
+
+@router.patch('/{promptId}', response_model=Data[PromptResponse])
+def rename_prompt(promptId: ResourceId, body: Rename, service: OwnedService, db: Db):
+    row = get_prompt(db, service.id, promptId)
+    changed = db.execute(update(Prompt).where(Prompt.id == row.id, Prompt.deleted.is_(False),
+        Prompt.revision == body.expectedRevision).values(name=body.name, revision=Prompt.revision + 1, updated_at=now()))
+    if changed.rowcount != 1:
+        raise ApiError(409, 'REVISION_CONFLICT', '최신 revision을 확인하세요.')
+    db.commit()
+    db.refresh(row)
+    return {'data': prompt_data(row, get_version(db, service.id, row.current_version_id))}
+
+
+@router.delete('/{promptId}', status_code=204)
+def delete_prompt(promptId: ResourceId, service: OwnedService, db: Db, if_match: IfMatch = None):
+    row = get_prompt(db, service.id, promptId)
+    if if_match is None:
+        raise ApiError(428, 'PRECONDITION_REQUIRED', 'If-Match 헤더가 필요합니다.')
+    if if_match != f'"{row.revision}"':
+        raise ApiError(412, 'PRECONDITION_FAILED', '최신 revision을 확인하세요.')
+    changed = db.execute(update(Prompt).where(Prompt.id == row.id, Prompt.deleted.is_(False),
+        Prompt.revision == row.revision).values(deleted=True, revision=Prompt.revision + 1, updated_at=now()))
+    if changed.rowcount != 1:
+        raise ApiError(412, 'PRECONDITION_FAILED', '최신 revision을 확인하세요.')
+    db.commit()
+    return Response(status_code=204)

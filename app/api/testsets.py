@@ -11,7 +11,7 @@ from app.api.dependencies import IfMatch, CurrentUser, Db, OwnedProject, Resourc
 from app.api.policies import Cursor, Limit
 from app.core.errors import ApiError
 from app.models.policy import GenerationRequest, QuestionHistory, TestQuestion, TestSet, TestSetVersion
-from app.schemas.policy import Generate, GeneratedQuestions, NewDraft, QuestionWrite, Review, Revision, TestSetCreate
+from app.schemas.policy import Generate, GeneratedQuestions, NewDraft, Rename, QuestionWrite, Review, Revision, TestSetCreate
 from app.schemas.responses import Data, Page, ERROR_RESPONSES
 from app.schemas.policy import TestSetOut, TestSetDetail, TestSetVersionOut, TestSetVersionSummary, QuestionOut, QuestionHistoryOut, EvaluationSnapshot
 from app.services import policy as service
@@ -64,7 +64,7 @@ def create_testset(body: TestSetCreate, project: OwnedProject, db: Db, response:
 @router.get('', response_model=Data[Page[TestSetOut]])
 def list_testsets(project: OwnedProject, db: Db, limit: Limit = 20, cursor: Cursor = None):
     """Return only test sets within the caller's authorized project."""
-    rows, next_cursor = service.paginate(db, select(TestSet).where(TestSet.project_id == project.id),
+    rows, next_cursor = service.paginate(db, select(TestSet).where(TestSet.project_id == project.id, TestSet.deleted.is_(False)),
         TestSet, f'testsets:{project.id}', limit, cursor)
     return {'data': {'items': [service.testset_data(row) for row in rows], 'nextCursor': next_cursor}}
 
@@ -101,13 +101,14 @@ def new_draft(testSetId: ResourceId, body: NewDraft, project: OwnedProject, user
         raise ApiError(409, 'TESTSET_NOT_CONFIRMED', '확정된 버전에서 새 초안을 만드세요.')
     if body.policyVersionIds is not None:
         service.policy_versions(db, project.id, body.policyVersionIds)
-    result = db.execute(update(TestSet).where(TestSet.id == row.id, TestSet.revision == body.expectedRevision)
+    result = db.execute(update(TestSet).where(TestSet.id == row.id, TestSet.revision == body.expectedRevision, TestSet.deleted.is_(False))
         .values(revision=TestSet.revision + 1).execution_options(synchronize_session=False))
     if result.rowcount != 1:
         db.rollback()
         raise ApiError(409, 'REVISION_CONFLICT', '최신 테스트셋 revision으로 다시 요청해 주세요.')
     db.refresh(row)
-    version = TestSetVersion(id=service.uid(), testset_id=row.id, version=row.revision, revision=1, status='draft',
+    number = db.scalar(select(func.max(TestSetVersion.version)).where(TestSetVersion.testset_id == row.id)) + 1
+    version = TestSetVersion(id=service.uid(), testset_id=row.id, version=number, revision=1, status='draft',
         policy_version_ids=body.policyVersionIds if body.policyVersionIds is not None else list(source.policy_version_ids), snapshot=None, created_at=now())
     db.add(version)
     db.flush()
@@ -303,3 +304,30 @@ def generate(testSetId: ResourceId, versionId: ResourceId, body: Generate, proje
     db.add(GenerationRequest(key=key, request_hash=fingerprint, response=result, expires_at=now() + timedelta(hours=24)))
     db.commit()
     return result
+
+
+@router.patch('/{testSetId}', response_model=Data[TestSetOut])
+def rename_testset(testSetId: ResourceId, body: Rename, project: OwnedProject, db: Db):
+    row = service.testset_row(db, project.id, testSetId)
+    changed = db.execute(update(TestSet).where(TestSet.id == row.id, TestSet.deleted.is_(False),
+        TestSet.revision == body.expectedRevision).values(name=body.name, revision=TestSet.revision + 1))
+    if changed.rowcount != 1:
+        raise ApiError(409, 'REVISION_CONFLICT', '최신 revision을 확인하세요.')
+    db.commit()
+    db.refresh(row)
+    return {'data': service.testset_data(row)}
+
+
+@router.delete('/{testSetId}', status_code=204)
+def delete_testset(testSetId: ResourceId, project: OwnedProject, db: Db, if_match: IfMatch = None):
+    row = service.testset_row(db, project.id, testSetId)
+    if if_match is None:
+        raise ApiError(428, 'PRECONDITION_REQUIRED', 'If-Match 헤더가 필요합니다.')
+    if if_match != f'"{row.revision}"':
+        raise ApiError(412, 'PRECONDITION_FAILED', '최신 revision을 확인하세요.')
+    changed = db.execute(update(TestSet).where(TestSet.id == row.id, TestSet.deleted.is_(False),
+        TestSet.revision == row.revision).values(deleted=True, revision=TestSet.revision + 1))
+    if changed.rowcount != 1:
+        raise ApiError(412, 'PRECONDITION_FAILED', '최신 revision을 확인하세요.')
+    db.commit()
+    return Response(status_code=204)

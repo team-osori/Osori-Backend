@@ -145,4 +145,29 @@ OSORI_TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/osori_test?ch
 
 성공 시 200과 해당 자원의 최신 응답(revision + 1)을 반환합니다. 이전 revision은 `409 REVISION_CONFLICT`, 다른 소유자·잘못된 부모 경로는 404입니다. 서비스 수정에는 서비스의 revision을 사용하며 연동 설정 revision이나 프로젝트 revision을 변경하지 않습니다.
 
-이 변경은 설정 저장과 이름 변경을 지원합니다. #20의 삭제·30일 휴지통·평가 중단/재개·멤버/역할·추가 분석 데이터는 별도 구현 대상으로 남아 있습니다.
+설정 저장과 이름 변경 외에 아래의 휴지통·멤버 기능과 평가 인계 문서의 중단/재개·분석 지원 상태를 함께 제공합니다.
+
+## 프로젝트 휴지통·리소스 삭제·멤버 (#20)
+
+### 삭제와 복구
+
+- `DELETE /api/projects/{projectId}`: admin 권한과 `If-Match: "revision"` 필요. 204, revision 증가, 즉시 목록·하위 API에서 숨기고 실행/대기 평가와 연결 테스트를 중단합니다.
+- `GET /api/projects/trash`: 소유자 자신의 휴지통만 반환합니다(`deletedAt`, `purgeAfter`, `revision`). 멤버에게 복구 권한을 주지 않습니다.
+- `POST /api/projects/{projectId}/restore`: 소유자가 `{"expectedRevision": N}`으로 삭제 후 30일 이내 복구합니다. 중단한 평가를 자동으로 재시작하지 않습니다. 기한 경과는 `409 RESTORE_EXPIRED`입니다.
+- 삭제 30일 후 `python -m app.maintenance`가 연결·프롬프트·정책·시험지·평가·검토·초대까지 해당 프로젝트의 DB 데이터를 정리합니다. 평가 워커가 시작할 때와 매 시간 이 정리를 자동 실행합니다. 워커가 중지된 동안 정리는 지연되며 재시작 시 처리합니다.
+- `PATCH …/prompts/{promptId}`, `PATCH …/testsets/{testSetId}`: `expectedRevision`, `name`으로 이름을 변경합니다. 원문 버전 번호와 이름 변경 revision을 분리합니다.
+- `DELETE …/prompts/{promptId}`, `DELETE …/testsets/{testSetId}`: 최신 따옴표 revision을 If-Match로 보내 논리 삭제합니다. 새 작업에서 선택할 수 없지만 이미 저장된 평가의 원문·결과·근거 스냅샷은 보존합니다.
+
+### 프로젝트 단위 권한
+
+기존 프로젝트 소유자는 항상 admin이며 제거하거나 강등할 수 없습니다. admin은 프로젝트 이름/설명·서비스 이름/설명·프로젝트 삭제·멤버 초대/역할/제거를 관리합니다. 수락한 member는 프로젝트 목록·조회와 정책/시험지/프롬프트/연동/평가 작업에 참여합니다. 미수락 초대는 접근 권한을 주지 않습니다. 리소스 권한 없음은 404, 멤버가 관리자 작업을 요청하면 `403 ADMIN_REQUIRED`입니다.
+
+- `GET /api/projects/{projectId}/members`: 소유자·수락 멤버·대기 초대 목록. `userId/loginId/name/role/status/revision/email/lastSeenAt`.
+- `POST /api/projects/{projectId}/invitations`: admin이 `{"loginId":"가입된아이디","role":"member"}`로 초대합니다. role은 admin/member. 이메일 발송은 하지 않으며 기존 계정만 지원합니다. 프로젝트당 소유자 포함 200명 제한입니다.
+- `GET /api/invitations`: 로그인 사용자의 미수락 초대 목록.
+- `POST /api/invitations/{invitationId}/accept`: 초대받은 사용자가 `expectedRevision`으로 수락.
+- `PATCH /api/projects/{projectId}/members/{userId}`: admin이 `expectedRevision`, `role`로 변경.
+- `DELETE /api/projects/{projectId}/members/{userId}`: admin이 If-Match로 제거하거나 미수락 초대를 취소. 삭제 후 다음 요청부터 접근 차단.
+- `GET /api/auth/me`: `projectRoles`로 프로젝트별 실제 역할을 반환합니다. 전역 역할이나 수집하지 않은 이메일은 만들어내지 않습니다(`email: null`). `lastSeenAt`은 로그인 또는 인증된 접근 기준이며 과도한 DB 쓰기를 피하도록 최대 5분 간격으로 갱신합니다.
+
+마이그레이션 `20261105_10`이 기존 데이터에 nullable 접근/삭제 시각과 리소스 deleted=false 기본값을 추가합니다. 기존 소유자 권한과 데이터는 유지합니다.

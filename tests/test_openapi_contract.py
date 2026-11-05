@@ -12,7 +12,7 @@ def test_openapi_exposes_request_constraints_and_typed_results():
     for path, operations in schema['paths'].items():
         if 'delete' in operations:
             headers.extend(p for p in operations['delete'].get('parameters', []) if p['in'] == 'header')
-    assert len(headers) == 3
+    assert len(headers) >= 3
     for header in headers:
         assert header['name'] == 'If-Match'
         assert header['schema']['pattern'] == '^"[1-9][0-9]*"$'

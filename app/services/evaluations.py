@@ -11,7 +11,7 @@ from app.services.prompts import get_version, select_ab_versions
 from app.services import condition_evaluation
 
 CRITERION_KEYS = tuple(CRITERIA['definitions'])
-TERMINAL = ('COMPLETED', 'PARTIAL_FAILED', 'FAILED')
+TERMINAL = ('COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED')
 
 
 def side_names(inputs):

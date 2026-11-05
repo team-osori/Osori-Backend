@@ -2,7 +2,7 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query, Request, Response
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -11,10 +11,16 @@ from app.core.database import get_db
 from app.core.errors import ApiError
 from app.api.dependencies import get_current_user
 from app.models.auth import User
+from app.models.project import Project, ProjectMember
+from app.schemas.membership import ProjectRole
 from app.schemas.auth import LoginId, LoginRequest, RefreshRequest, SignupRequest
 from app.services import auth, rate_limit
 
 from app.schemas.responses import Data, UserResponse, Availability, LoginResponse, TokenPair, ERROR_RESPONSES
+
+
+class MeResponse(UserResponse):
+    projectRoles: list[ProjectRole]
 
 router = APIRouter(prefix='/api/auth', tags=['auth'], responses=ERROR_RESPONSES)
 Db = Annotated[Session, Depends(get_db)]
@@ -67,13 +73,19 @@ def login(body: LoginRequest, db: Db, request: Request):
     valid = auth.password_hash.verify(body.password, user.password_hash if user else auth.DUMMY_HASH)
     if user is None or not valid:
         raise ApiError(401, 'INVALID_CREDENTIALS', '아이디 또는 비밀번호를 확인해 주세요.')
-    return {'data': {'user': auth.user_data(user), **auth.create_session(db, user)}}
+    tokens = auth.create_session(db, user)
+    db.refresh(user)
+    return {'data': {'user': auth.user_data(user), **tokens}}
 
 
-@router.get('/me', response_model=Data[UserResponse])
-def me(user: Annotated[User, Depends(get_current_user)]):
+@router.get('/me', response_model=Data[MeResponse])
+def me(user: Annotated[User, Depends(get_current_user)], db: Db):
     """Return only public information for the authenticated user."""
-    return {'data': auth.user_data(user)}
+    rows = db.execute(select(Project, ProjectMember.role).outerjoin(ProjectMember,
+        (ProjectMember.project_id == Project.id) & (ProjectMember.user_id == user.id) & (ProjectMember.status == 'active'))
+        .where(Project.deleted_at.is_(None), or_(Project.owner_id == user.id, ProjectMember.id.is_not(None)))).all()
+    return {'data': {**auth.user_data(user), 'projectRoles': [{'projectId': p.id,
+        'role': 'admin' if p.owner_id == user.id else role} for p, role in rows]}}
 
 
 @router.post('/refresh', response_model=Data[TokenPair])

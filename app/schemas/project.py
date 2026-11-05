@@ -61,7 +61,7 @@ class ProgressTestSet(BaseModel):
 
 class ProgressEvaluation(BaseModel):
     id: str
-    status: Literal['QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED']
+    status: Literal['QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED']
     completedQuestions: int
     totalQuestions: int
     reviewedQuestions: int = Field(description='모든 평가 대상의 모든 기대 조건에 최신 사람 pass/fail 판정이 있는 문항 수')

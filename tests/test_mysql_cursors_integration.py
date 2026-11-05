@@ -41,3 +41,34 @@ def test_mysql_metadata_revision_allows_only_one_concurrent_writer(mysql_client)
         winner = next(response.json()['data'] for response in responses if response.status_code == 200)
         assert client.get(path, headers=headers).json()['data'] == winner
         assert winner['revision'] == 2
+
+
+def test_mysql_project_trash_cleanup_removes_full_graph(mysql_client, monkeypatch):
+    from test_resource_lifecycle import exercise_project_trash
+    client, factory, _, _ = mysql_client
+    exercise_project_trash(factory, client, monkeypatch)
+
+
+def test_mysql_duplicate_invitations_and_acceptance(mysql_client):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from test_projects import register
+    client, _, _, _ = mysql_client
+    headers = register(client, 'invite_owner')
+    member = register(client, 'invite_member')
+    project = client.post('/api/projects', headers=headers, json={'name': 'Shared'}).headers['location']
+    barrier = Barrier(2)
+    def invite(_):
+        barrier.wait(timeout=10)
+        return client.post(project + '/invitations', headers=headers, json={'loginId': 'invite_member'})
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(invite, (1, 2)))
+    assert sorted(result.status_code for result in results) == [201, 409]
+    invitation = next(result.json()['data'] for result in results if result.status_code == 201)
+    barrier = Barrier(2)
+    def accept(_):
+        barrier.wait(timeout=10)
+        return client.post('/api/invitations/' + invitation['id'] + '/accept', headers=member, json={'expectedRevision': 1})
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(accept, (1, 2)))
+    assert sorted(result.status_code for result in results) == [200, 409]

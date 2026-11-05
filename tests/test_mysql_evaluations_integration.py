@@ -154,3 +154,10 @@ def test_mysql_project_progress_and_review_counts(mysql_client, monkeypatch):
     item = client.get(path + '/items', headers=headers).json()['data']['items'][0]
     detail = client.get(path + '/items/' + item['id'], headers=headers).json()['data']
     exercise_finished_progress(factory, client, headers, service, path, detail)
+
+
+def test_mysql_cancel_resume_preserves_uncertain_calls(mysql_client, monkeypatch):
+    from test_evaluation_control import exercise_cancel_running
+    client, factory, _, _ = mysql_client
+    headers, service, original, _ = prepare(factory, client, monkeypatch, question_count=2)
+    exercise_cancel_running(factory, client, headers, service, original)

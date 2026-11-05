@@ -8,10 +8,10 @@ from fastapi import APIRouter, Query, Response
 from sqlalchemy import and_, exists, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
-from app.api.dependencies import CurrentUser, Db, OwnedProject, OwnedService, ResourceId
+from app.api.dependencies import AdminProject, CurrentUser, Db, OwnedProject, OwnedService, ResourceId
 from app.core.errors import ApiError
 from app.core.cursors import cursor_id, cursor_time, decode_cursor
-from app.models.project import Chatbot, Project
+from app.models.project import Chatbot, Project, ProjectMember
 from app.models.connection import Connection
 from app.schemas.project import ChatbotCreate, ProjectCreate, ChatbotPatch, ProjectPatch
 from app.services.auth import now
@@ -62,7 +62,9 @@ def list_projects(user: CurrentUser, db: Db,
                   cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None):
     """Page through only the caller's projects using a stable timestamp and ID cursor."""
     has_service = exists().where(Chatbot.project_id == Project.id)
-    statement = select(Project, has_service).where(Project.owner_id == user.id)
+    membership = exists().where(ProjectMember.project_id == Project.id, ProjectMember.user_id == user.id,
+                                ProjectMember.status == 'active')
+    statement = select(Project, has_service).where(Project.deleted_at.is_(None), or_(Project.owner_id == user.id, membership))
     if cursor:
         try:
             payload = decode_cursor(cursor, {'v', 'owner', 'createdAt', 'id'})
@@ -107,7 +109,7 @@ def update_metadata(db, row, body):
 
 
 @router.patch('/{projectId}', response_model=Data[ProjectResponse])
-def update_project(body: ProjectPatch, project: OwnedProject, db: Db):
+def update_project(body: ProjectPatch, project: AdminProject, db: Db):
     """프로젝트 이름·설명을 수정합니다. 생략한 필드는 유지하며 description=null은 설명을 지웁니다."""
     update_metadata(db, project, body)
     return get_project(project, db)
@@ -151,7 +153,7 @@ def get_chatbot(serviceId: ResourceId, project: OwnedProject, db: Db):
 
 
 @router.patch('/{projectId}/services/{serviceId}', tags=['services'], response_model=Data[ChatbotResponse])
-def update_chatbot(body: ChatbotPatch, service: OwnedService, db: Db):
+def update_chatbot(body: ChatbotPatch, service: OwnedService, project: AdminProject, db: Db):
     """챗봇 이름·설명을 수정합니다. expectedRevision은 챗봇 자체의 revision입니다."""
     update_metadata(db, service, body)
     has_connection = bool(db.scalar(select(exists().where(Connection.service_id == service.id))))

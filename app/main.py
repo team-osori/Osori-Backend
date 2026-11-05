@@ -14,6 +14,8 @@ from app.api.prompts import router as prompt_router
 from app.api.policies import router as policy_router
 from app.api.testsets import router as testset_router
 from app.api.evaluations import router as evaluation_router
+from app.api.members import router as member_router
+from app.api.project_trash import router as trash_router
 from app.core.errors import ApiError
 from starlette.exceptions import HTTPException
 from sqlalchemy.exc import OperationalError
@@ -26,12 +28,14 @@ app.add_middleware(AuthRequestLimits)
 app.add_middleware(RequestIdMiddleware)
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], allow_headers=['Authorization', 'Content-Type', 'If-Match', 'Idempotency-Key'], expose_headers=['X-Request-Id', 'Location', 'Retry-After'])
 app.include_router(router)
+app.include_router(trash_router)
 app.include_router(project_router)
 app.include_router(connection_router)
 app.include_router(prompt_router)
 app.include_router(policy_router)
 app.include_router(testset_router)
 app.include_router(evaluation_router)
+app.include_router(member_router)
 
 
 @app.exception_handler(ApiError)

@@ -6,15 +6,17 @@ from app.models.prompt import Prompt, PromptVersion
 
 
 def get_prompt(db: Session, service_id: str, prompt_id: str) -> Prompt:
-    prompt = db.scalar(select(Prompt).where(Prompt.id == prompt_id, Prompt.service_id == service_id))
+    prompt = db.scalar(select(Prompt).where(Prompt.id == prompt_id, Prompt.service_id == service_id, Prompt.deleted.is_(False)))
     if prompt is None:
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '프롬프트를 찾을 수 없습니다.')
     return prompt
 
 
-def get_version(db: Session, service_id: str, version_id: str) -> PromptVersion:
-    version = db.scalar(select(PromptVersion).join(Prompt).where(
-        PromptVersion.id == version_id, Prompt.service_id == service_id))
+def get_version(db: Session, service_id: str, version_id: str, *, allow_deleted=False) -> PromptVersion:
+    statement = select(PromptVersion).join(Prompt).where(PromptVersion.id == version_id, Prompt.service_id == service_id)
+    if not allow_deleted:
+        statement = statement.where(Prompt.deleted.is_(False))
+    version = db.scalar(statement)
     if version is None:
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '프롬프트 버전을 찾을 수 없습니다.')
     return version

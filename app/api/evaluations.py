@@ -24,9 +24,25 @@ from app.services.evaluation_comparison import compare
 from app.services.auth import now
 from app.services.evaluation_judge import EvaluationJudge, get_evaluation_judge
 from app.services.policy import paginate, uid
+from app.schemas.evaluation import EvaluationAction, EvaluationResume, AnalysisCapabilities
+from app.services.evaluation_control import cancel_run, resume_run
 
 router = APIRouter(prefix='/api/projects/{projectId}/services/{serviceId}/evaluations',
     tags=['evaluations'], responses=ERROR_RESPONSES)
+
+
+@router.get('/capabilities', response_model=Data[AnalysisCapabilities])
+def capabilities(service_row: OwnedService):
+    """지원하지 않는 분석을 0점 또는 가짜 제안으로 표시하지 않도록 기능별 상태를 반환합니다."""
+    return {'data': {
+        'causeClassification': {'supported': False, 'reason': '검색·프롬프트·모델의 인과 분리 실험을 수행하지 않습니다.'},
+        'causeHypotheses': {'supported': True, 'reason': '수집한 근거가 있는 가설만 제공합니다. 확정 원인이 아닙니다.'},
+        'promptSuggestions': {'supported': False, 'reason': '조건별 개선 권고는 있지만 프롬프트 자동 수정안은 생성하지 않습니다.'},
+        'promptDiff': {'supported': False, 'reason': '생성된 프롬프트 수정안이 없습니다.'},
+        'interRaterAgreement': {'supported': False, 'reason': '독립 다중 채점자 실험을 수행하지 않습니다.'},
+        'unstableQuestions': {'supported': False, 'reason': '동일 조건의 반복 실행 실험을 수행하지 않습니다.'},
+        'fixableQuestionCount': {'supported': False, 'reason': '프롬프트 변경 효과를 사전에 예측하지 않습니다.'},
+    }}
 
 
 @router.post('', status_code=202, response_model=Data[EvaluationResponse])
@@ -230,3 +246,30 @@ def compare_evaluations(evaluationId: ResourceId, service_row: OwnedService, db:
     result['items'] = [by_question[item.question_id] for item in rows]
     result['nextCursor'] = next_cursor
     return {'data': result}
+
+
+def controlled_run(db, service_id, evaluation_id):
+    row = db.scalar(select(Evaluation).where(Evaluation.id == evaluation_id,
+        Evaluation.service_id == service_id).with_for_update())
+    if row is None:
+        raise ApiError(404, 'RESOURCE_NOT_FOUND', '평가를 찾을 수 없습니다.')
+    return row
+
+
+@router.post('/{evaluationId}/cancel', response_model=Data[EvaluationResponse])
+def cancel_evaluation(evaluationId: ResourceId, body: EvaluationAction, service_row: OwnedService, db: Db):
+    """대기·진행 평가를 중단합니다. 저장된 결과는 보존하고 외부에서 이미 시작된 호출은 결과 불확실로 표시합니다."""
+    row = controlled_run(db, service_row.id, evaluationId)
+    cancel_run(db, row)
+    db.commit()
+    return {'data': service.run_data(row)}
+
+
+@router.post('/{evaluationId}/resume', status_code=202, response_model=Data[EvaluationResponse])
+def resume_evaluation(evaluationId: ResourceId, body: EvaluationResume, service_row: OwnedService, db: Db,
+                      judge: Annotated[EvaluationJudge, Depends(get_evaluation_judge)]):
+    """미호출 항목만 재개합니다. 성공·실패·결과 불확실 호출은 반복하지 않으며 기존 설정과 판정 모델이 같아야 합니다."""
+    row = controlled_run(db, service_row.id, evaluationId)
+    resume_run(db, row, body.connectionRevision, judge)
+    db.commit()
+    return {'data': service.run_data(row)}
