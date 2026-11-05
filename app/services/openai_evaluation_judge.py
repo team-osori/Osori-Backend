@@ -89,7 +89,11 @@ class OpenAIEvaluationJudge:
                 return json.loads(data)
 
     async def judge(self, **kwargs):
-        source = json.dumps(kwargs, ensure_ascii=False)
+        # Full policy text already lives in the server-owned evidence catalog.
+        payload = {**kwargs, 'policies': [
+            {key: value for key, value in policy.items() if key != 'content'}
+            if isinstance(policy, dict) else policy for policy in kwargs.get('policies', [])]}
+        source = json.dumps(payload, ensure_ascii=False)
         if len(source.encode()) > MAX_INPUT_BYTES:
             raise JudgeError('JUDGE_INPUT_TOO_LARGE', '판정할 정책·답변·검색 자료의 범위를 줄여 주세요.')
         count = len(kwargs['question'].get('expectedConditions', []))

@@ -31,6 +31,8 @@ def test_responses_adapter_runs_through_normal_worker_with_a_conditions(single_r
         assert 'test-only-evaluation-key' not in json.dumps(payload)
         assert 'kind=forbidden' in payload['instructions']
         data = json.loads(payload['input'][0]['content'])
+        assert all('content' not in policy for policy in data['policies'])
+        assert any(source['kind'] == 'policy' and source['text'] for source in data['evidence_catalog'])
         assert {condition['kind'] for condition in data['question']['expectedConditions']} == {'required', 'forbidden'}
         calls.append(data)
         return completed(await ConditionJudge().judge(**data))
