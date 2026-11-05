@@ -15,6 +15,8 @@ def validate_comparison(baseline, target):
         raise ApiError(409, 'EVALUATION_NOT_TERMINAL', '평가 종료 후 비교할 수 있습니다.')
     if baseline.inputs.get('mode') != 'SINGLE' or target.inputs.get('mode') != 'SINGLE':
         raise ApiError(409, 'SINGLE_EVALUATION_REQUIRED', '단일 대상 평가끼리 비교하세요.')
+    if any(run.inputs.get('criteria', {}).get('version') != 2 for run in (baseline, target)):
+        raise ApiError(409, 'UNSUPPORTED_EVALUATION_PROFILE', '조건별 판정을 지원하는 v2 평가끼리 비교하세요.')
     if any(baseline.inputs[key] != target.inputs[key] for key in ('testSet', 'criteria', 'judge')):
         raise ApiError(409, 'COMPARISON_INPUT_MISMATCH', '질문·기대 조건·정책·판정 기준이 동일해야 합니다.')
     if baseline.inputs['connection']['config'] != target.inputs['connection']['config']:

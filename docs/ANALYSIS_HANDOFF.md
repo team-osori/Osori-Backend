@@ -115,7 +115,7 @@ verdict는 pass/fail/not_evaluable다. 종료한 실행에서 실제 답변이 �
 최신 담당자 조건 판정을 반영한다. 기존 criteria 통과율·점수는 AI 원본 집계이며
 criterionPassRatesBasis=AUTOMATIC으로 명시한다. 사람이 통과로 바꿨다고 새 AI 점수를 만들어내지 않는다.
 원인 분석의 관측 자료와 AI 가설은 자동 분석 당시 자료를 유지한다.
-DB 마이그레이션 20261105_08을 적용해야 한다.
+A의 20261105_08 다음에 B의 20261105_09 마이그레이션을 적용한다.
 
 ## 같은 입력으로 재평가하고 전후 비교
 
@@ -139,7 +139,6 @@ counts의 단위는 문항이 아닌 조건이다. 미판정·호출 실패는 N
 조건별로 최신 담당자 판정을 우선하며, 각 문항의 비교에 사용한 reviewRevision을 응답한다.
 전체 counts와 페이징된 items/nextCursor를 반환한다. limit/cursor는 기존 목록 규칙을 따른다.
 검토 이력이 달라지면 이전 비교 커서는 무효화되므로 처음부터 새로 조회한다.
-DB 마이그레이션 20261105_09을 적용해야 한다.
 ## A 담당 구현과의 확정 연결 (PR #14 반영)
 
 A의 실제 조건 형식은 id, description, kind(required/forbidden), category,
