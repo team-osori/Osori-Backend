@@ -75,11 +75,11 @@ def validate_generated(output, snapshot):
     allowed = {e['id'] for e in snapshot['evidence']}
     result = []
     for edit in parsed.suggestions:
-        if (content.find(edit.originalText) < 0 or content.find(edit.originalText, content.find(edit.originalText) + 1) >= 0 or edit.originalText == edit.replacementText
+        start = content.find(edit.originalText)
+        if (start < 0 or content.find(edit.originalText, start + 1) >= 0 or edit.originalText == edit.replacementText
                 or not edit.reason.strip() or len(set(edit.evidenceIds)) != len(edit.evidenceIds)
                 or not set(edit.evidenceIds) <= allowed):
             raise ValueError('Invalid source reference')
-        start = content.index(edit.originalText)
         candidate = content[:start] + edit.replacementText + content[start + len(edit.originalText):]
         if not candidate.strip() or len(candidate) > 100_000:
             raise ValueError('Invalid resulting prompt')
@@ -199,7 +199,8 @@ def apply_suggestions(db, service_id, prompt, body):
     if row.status == 'APPLIED':
         if row.application_hash != application_hash:
             raise ApiError(409, 'SUGGESTION_ALREADY_APPLIED', '이미 적용한 수정 제안입니다.')
-        return get_version(db, service_id, row.applied_version_id)
+        # The winning insert may be newer than this transaction's repeatable-read snapshot.
+        return get_version(db, service_id, row.applied_version_id, lock=True)
     if row.status != 'READY' or row.revision != body.suggestionRevision:
         raise ApiError(409, 'SUGGESTION_CONFLICT', '최신 수정 제안 상태와 revision을 확인하세요.')
     if not row.selected_ids:

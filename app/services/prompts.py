@@ -17,10 +17,12 @@ def get_prompt(db: Session, service_id: str, prompt_id: str) -> Prompt:
     return prompt
 
 
-def get_version(db: Session, service_id: str, version_id: str, *, allow_deleted=False) -> PromptVersion:
+def get_version(db: Session, service_id: str, version_id: str, *, allow_deleted=False, lock=False) -> PromptVersion:
     statement = select(PromptVersion).join(Prompt).where(PromptVersion.id == version_id, Prompt.service_id == service_id)
     if not allow_deleted:
         statement = statement.where(Prompt.deleted.is_(False))
+    if lock:
+        statement = statement.with_for_update().execution_options(populate_existing=True)
     version = db.scalar(statement)
     if version is None:
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '프롬프트 버전을 찾을 수 없습니다.')
