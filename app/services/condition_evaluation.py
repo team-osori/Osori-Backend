@@ -70,6 +70,10 @@ def validate_judgement(output, question, catalog):
                 raise ValueError('A condition verdict requires its policy source')
             if not any(ref['kind'] == 'answer' for ref in references):
                 raise ValueError('A condition verdict requires the evaluated answer')
+            quote = (decision.get('issue') or {}).get('answerQuote')
+            answer = next(source['text'] for source in catalog if source['kind'] == 'answer')
+            if quote and quote not in answer:
+                raise ValueError('Issue quote must be present verbatim in the evaluated answer')
     policy_decisions = [decision for decision in decisions if conditions[decision['conditionId']]['criterion'] == 'policy']
     if policy_decisions:
         expected = 'fail' if any(d['verdict'] == 'fail' for d in policy_decisions) else (

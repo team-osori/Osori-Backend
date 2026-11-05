@@ -16,6 +16,8 @@ from app.schemas.evaluation import (Criterion, EvaluationCreate, EvaluationInput
     EvaluationItemSummary, EvaluationResponse, EvaluationSummary)
 from app.schemas.responses import Data, Page, ERROR_RESPONSES
 from app.services import evaluations as service
+from app.services import evaluation_analysis as analysis
+from app.schemas.condition_evaluation import IssueKind
 from app.services.auth import now
 from app.services.evaluation_judge import EvaluationJudge, get_evaluation_judge
 from app.services.policy import paginate, uid
@@ -90,26 +92,39 @@ def get_summary(evaluationId: ResourceId, service_row: OwnedService, db: Db):
     """Keep failures, ungraded cases and paired comparisons separate from judged pass rates."""
     row = service.get_run(db, service_row.id, evaluationId)
     items = db.scalars(select(EvaluationItem).where(EvaluationItem.evaluation_id == row.id)).all()
-    return {'data': service.aggregate(row, items)}
+    return {'data': {**service.aggregate(row, items), 'analysis': analysis.summarize(row, items)}}
 
 
 @router.get('/{evaluationId}/items', response_model=Data[Page[EvaluationItemSummary]])
 def list_items(evaluationId: ResourceId, service_row: OwnedService, db: Db,
                limit: Limit = 20, cursor: Cursor = None, criterion: Criterion | None = None,
+               resultStatus: Annotated[str | None, Query(pattern=r'^(MET|UNMET|REVIEW_REQUIRED|JUDGMENT_ERROR|EXECUTION_ERROR|NOT_RUN|IN_PROGRESS)$')] = None,
+               issueKind: IssueKind | None = None,
                change: Annotated[str | None, Query(pattern=r'^(IMPROVED|WORSENED|UNCHANGED_PASS|UNCHANGED_FAIL|NOT_COMPARABLE)$')] = None):
     """Page through per-question improvements/regressions without returning all answers at once."""
     row = service.get_run(db, service_row.id, evaluationId)
     if change and criterion is None:
         raise ApiError(400, 'VALIDATION_ERROR', 'change 필터에는 criterion이 필요합니다.')
     statement = select(EvaluationItem).where(EvaluationItem.evaluation_id == row.id)
-    if change:
+    if change or resultStatus or issueKind:
         # Bounded to 200 items by confirmed test-set constraints; filter IDs before paging.
         items = db.scalars(statement).all()
-        ids = [item.id for item in items if service.change(item.a, item.b, criterion) == change]
+        ids = []
+        for item in items:
+            detail = analysis.describe_side(item.input, item.a)
+            if change and service.change(item.a, item.b, criterion) != change:
+                continue
+            if resultStatus and detail['status'] != resultStatus:
+                continue
+            if issueKind and not any(issue['kind'] == issueKind for issue in detail['issues']):
+                continue
+            ids.append(item.id)
         statement = statement.where(EvaluationItem.id.in_(ids))
-    scope = f'evaluationItems:{row.id}:{criterion}:{change}'
+    scope = f'evaluationItems:{row.id}:{criterion}:{change}:{resultStatus}:{issueKind}'
     rows, next_cursor = paginate(db, statement, EvaluationItem, scope, limit, cursor)
-    return {'data': {'items': [service.item_summary(item, row.inputs) for item in rows], 'nextCursor': next_cursor}}
+    return {'data': {'items': [{**service.item_summary(item, row.inputs),
+        'resultStatus': analysis.describe_side(item.input, item.a)['status'],
+        'needsReview': analysis.describe_side(item.input, item.a)['needsReview']} for item in rows], 'nextCursor': next_cursor}}
 
 
 @router.get('/{evaluationId}/items/{itemId}', response_model=Data[EvaluationItemResponse])
@@ -119,4 +134,6 @@ def get_item(evaluationId: ResourceId, itemId: ResourceId, service_row: OwnedSer
     item = db.scalar(select(EvaluationItem).where(EvaluationItem.id == itemId, EvaluationItem.evaluation_id == row.id))
     if item is None:
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '평가 문항을 찾을 수 없습니다.')
-    return {'data': {**service.item_summary(item, row.inputs), 'input': item.input, 'a': item.a, 'b': item.b}}
+    details = analysis.item_analysis(row, item)
+    return {'data': {**service.item_summary(item, row.inputs), 'input': item.input, 'a': item.a, 'b': item.b,
+        'resultStatus': details['a']['status'], 'needsReview': details['a']['needsReview'], 'analysis': details}}

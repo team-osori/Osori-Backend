@@ -141,6 +141,8 @@ class EvaluationItemSummary(BaseModel):
     aCallStatus: Literal['NOT_RUN', 'RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED']
     bCallStatus: Literal['NOT_APPLICABLE', 'NOT_RUN', 'RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED']
     changes: dict[str, str]
+    resultStatus: str | None = None
+    needsReview: bool = False
 
 
 class EvaluationSide(BaseModel):
@@ -160,6 +162,7 @@ class EvaluationItemResponse(EvaluationItemSummary):
     input: dict
     a: EvaluationSide | None
     b: EvaluationSide | None
+    analysis: dict = {}
 
 
 class EvaluationInputs(BaseModel):
@@ -216,3 +219,4 @@ class EvaluationSummary(BaseModel):
     criteria: dict[str, CriterionSummary]
     formula: str
     provisional: bool
+    analysis: dict = {}

@@ -19,8 +19,33 @@ class ExpectedCondition(BaseModel):
     sourceQuote: Annotated[str, StringConstraints(min_length=1, max_length=10000, pattern=r'\S')]
 
 
+IssueKind = Literal['condition_omitted', 'policy_contradiction', 'unsupported_claim',
+                    'incomplete_guidance', 'non_answer', 'unclear_answer', 'other']
+
+
+class IssueDetail(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    kind: IssueKind
+    answerQuote: RequiredText | None = None
+    missingGuidance: Annotated[list[RequiredText], Field(max_length=20)] = []
+    recommendation: RequiredText
+
+    @model_validator(mode='after')
+    def require_observation(self):
+        if not self.answerQuote and not self.missingGuidance:
+            raise ValueError('A finding requires an answer quote or omitted guidance')
+        return self
+
+
 class ConditionResult(CriterionResult):
     conditionId: Id
+    issue: IssueDetail | None = None
+
+    @model_validator(mode='after')
+    def require_issue_for_failure(self):
+        if (self.status == 'judged' and self.verdict == 'fail') != (self.issue is not None):
+            raise ValueError('Only failed conditions require an issue and recommendation')
+        return self
 
 
 class ScoredResult(CriterionResult):
