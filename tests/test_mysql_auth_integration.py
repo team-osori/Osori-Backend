@@ -302,3 +302,27 @@ def test_mysql_concurrent_generation_is_idempotent(mysql_client):
     assert [r.status_code for r in responses] == [200, 200], [r.text for r in responses]
     assert responses[0].json() == responses[1].json()
     assert len(calls) == 1
+
+
+def test_mysql_policy_cursor_rejects_extreme_values(mysql_client):
+    """Reject malformed cursors before MySQL parameter conversion while keeping valid pages working."""
+    import base64
+    client, _, _, _ = mysql_client
+    headers, base, source, path, _ = mysql_policy_draft(client)
+    testset_id = path.split('/')[-3]
+    endpoints = [(base + '/policies/' + source['policy']['id'] + '/versions', 'policyVersions:' + source['policy']['id']),
+                 (base + '/testsets/' + testset_id + '/versions', 'testsetVersions:' + testset_id)]
+    for endpoint, scope in endpoints:
+        for value in (float('inf'), 2**31, 10**100, True, '1'):
+            payload = {'v': 1, 'scope': scope, 'id': source['version']['id'], 'value': value}
+            encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+            response = client.get(endpoint, params={'cursor': encoded}, headers=headers)
+            assert response.status_code == 400, response.text
+            assert response.json()['error']['code'] == 'INVALID_CURSOR'
+        assert client.get(endpoint, headers=headers).status_code == 200
+    for endpoint, scope in ((base + '/policies', 'policies:' + base.split('/')[-1]),
+                            (base + '/testsets', 'testsets:' + base.split('/')[-1])):
+        payload = {'v': 1, 'scope': scope, 'id': source['version']['id'], 'value': '0001-01-01T00:00:00'}
+        encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+        response = client.get(endpoint, params={'cursor': encoded}, headers=headers)
+        assert response.status_code == 400 and response.json()['error']['code'] == 'INVALID_CURSOR'

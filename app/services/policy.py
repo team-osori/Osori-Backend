@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -124,16 +125,47 @@ def version_summary(row):
             'confirmedBy': row.confirmed_by, 'confirmedAt': iso(row.confirmed_at), 'createdAt': iso(row.created_at)}
 
 
+def cursor_object(pairs):
+    """Reject duplicate JSON members instead of silently accepting the last value."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('Duplicate cursor member')
+        result[key] = value
+    return result
+
+
+def invalid_json_constant(value):
+    """Reject nonstandard JSON NaN and infinity tokens at the decoding boundary."""
+    raise ValueError('Non-finite cursor constant')
+
+
 def paginate(db, statement, model, scope, limit, cursor, *, versioned=False):
     """Use scoped keyset pagination, with version ordering for immutable version histories."""
     column = model.version if versioned else model.created_at
     if cursor:
         try:
-            data = json.loads(base64.b64decode(cursor.encode(), altchars=b'-_', validate=True))
-            if data['scope'] != scope or data['v'] != 1 or not isinstance(data['id'], str):
+            data = json.loads(base64.b64decode(cursor.encode(), altchars=b'-_', validate=True),
+                              object_pairs_hook=cursor_object, parse_constant=invalid_json_constant)
+            if (type(data) is not dict or set(data) != {'scope', 'v', 'id', 'value'}
+                    or data['scope'] != scope or type(data['v']) is not int or data['v'] != 1
+                    or not isinstance(data['id'], str)
+                    or re.fullmatch(r'[A-Za-z0-9_-]{1,100}', data['id']) is None):
                 raise ValueError()
-            value = int(data['value']) if versioned else datetime.fromisoformat(data['value'])
-        except (ValueError, KeyError, TypeError, UnicodeError):
+            if versioned:
+                # SQLAlchemy Integer maps to signed INT in MySQL. Do not coerce
+                # floats, numeric strings or booleans into valid cursor values.
+                value = data['value']
+                if type(value) is not int or not 1 <= value <= 2**31 - 1:
+                    raise ValueError()
+            else:
+                if not isinstance(data['value'], str):
+                    raise ValueError()
+                value = datetime.fromisoformat(data['value'])
+                # Persisted timestamps are naive UTC; MySQL DATETIME starts at 1000.
+                if value.tzinfo is not None or value.year < 1000 or value.isoformat() != data['value']:
+                    raise ValueError()
+        except (ValueError, KeyError, TypeError, UnicodeError, OverflowError):
             raise ApiError(400, 'INVALID_CURSOR', '유효하지 않은 커서입니다.') from None
         statement = statement.where(or_(column < value, and_(column == value, model.id < data['id'])))
     rows = db.scalars(statement.order_by(column.desc(), model.id.desc()).limit(limit + 1)).all()

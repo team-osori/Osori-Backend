@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 Text = Annotated[str, StringConstraints(min_length=1, max_length=2000)]
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 Id = Annotated[str, StringConstraints(min_length=1, max_length=100, pattern=r'^[A-Za-z0-9_-]+$')]
+RevisionNumber = Annotated[int, Field(strict=True, ge=1, le=2**31 - 1)]
 
 
 class Input(BaseModel):
@@ -44,11 +45,11 @@ class PolicyCreate(PolicyBody):
 
 
 class PolicyVersionCreate(PolicyBody):
-    expectedRevision: Annotated[int, Field(ge=1)]
+    expectedRevision: RevisionNumber
 
 
 class Revision(Input):
-    expectedRevision: Annotated[int, Field(ge=1)]
+    expectedRevision: RevisionNumber
 
 
 class TestSetCreate(Input):
