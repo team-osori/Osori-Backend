@@ -13,7 +13,7 @@ from app.api.policies import Cursor, Limit
 from app.core.errors import ApiError
 from app.models.evaluation import Evaluation, EvaluationItem, EvaluationReview
 from app.schemas.evaluation import (Criterion, EvaluationCreate, EvaluationInputs, EvaluationItemResponse,
-    EvaluationItemSummary, EvaluationResponse, EvaluationSummary, EvaluationRerun)
+    EvaluationItemSummary, EvaluationResponse, EvaluationSummary, EvaluationRerun, EvaluationComparison)
 from app.schemas.responses import Data, Page, ERROR_RESPONSES
 from app.services import evaluations as service
 from app.services import evaluation_analysis as analysis
@@ -101,18 +101,18 @@ def get_summary(evaluationId: ResourceId, service_row: OwnedService, db: Db):
 
 @router.get('/{evaluationId}/items', response_model=Data[Page[EvaluationItemSummary]])
 def list_items(evaluationId: ResourceId, service_row: OwnedService, db: Db,
-               limit: Limit = 20, cursor: Cursor = None, criterion: Criterion | None = None,
+               limit: Limit = 20, cursor: Cursor = None, criterion: Annotated[Criterion | None, Query(description='평가 inputs.criteria.definitions에 포함된 기준만 필터링할 수 있습니다. 미포함 기준은 빈 목록을 반환합니다.')] = None,
                resultStatus: Annotated[str | None, Query(pattern=r'^(MET|UNMET|REVIEW_REQUIRED|JUDGMENT_ERROR|EXECUTION_ERROR|NOT_RUN|IN_PROGRESS)$')] = None,
                issueKind: IssueKind | None = None,
-               change: Annotated[str | None, Query(pattern=r'^(IMPROVED|WORSENED|UNCHANGED_PASS|UNCHANGED_FAIL|NOT_COMPARABLE)$')] = None):
+               change: Annotated[str | None, Query(pattern=r'^(IMPROVED|WORSENED|UNCHANGED_PASS|UNCHANGED_FAIL|NOT_COMPARABLE)$', description='criterion이 필수이며 COMPARE 평가에서만 사용합니다. SINGLE 평가는 comparison API를 사용하세요.')] = None):
     """Page through per-question improvements/regressions without returning all answers at once."""
     row = service.get_run(db, service_row.id, evaluationId)
     if change and criterion is None:
         raise ApiError(400, 'VALIDATION_ERROR', 'change 필터에는 criterion이 필요합니다.')
-    if criterion and criterion not in row.inputs['criteria']['definitions']:
-        raise ApiError(400, 'INVALID_CRITERION', '이 평가에 포함된 채점 항목을 선택하세요.')
     if change and row.inputs.get('mode') == 'SINGLE':
         raise ApiError(400, 'COMPARISON_REQUIRED', '전후 비교는 comparison API를 사용하세요.')
+    if criterion and criterion not in row.inputs['criteria']['definitions']:
+        return {'data': {'items': [], 'nextCursor': None}}
     statement = select(EvaluationItem).where(EvaluationItem.evaluation_id == row.id)
     if change or resultStatus or issueKind:
         # Bounded to 200 items by confirmed test-set constraints; filter IDs before paging.
@@ -194,7 +194,8 @@ def list_reviews(evaluationId: ResourceId, itemId: ResourceId, service_row: Owne
     return {'data': {'items': [review_data(review) for review in rows], 'nextCursor': next_cursor}}
 
 
-@router.post('/{evaluationId}/reruns', status_code=202, response_model=Data[EvaluationResponse])
+@router.post('/{evaluationId}/reruns', status_code=202, response_model=Data[EvaluationResponse],
+    description='종료한 SINGLE v2 평가만 재실행할 수 있습니다(COMPLETED/PARTIAL_FAILED/FAILED). COMPARE 또는 진행 중인 평가는 409 INVALID_REEVALUATION_SOURCE입니다. 원본 질문·기준·판정 모델과 연동 설정을 유지해야 합니다.')
 def rerun_evaluation(evaluationId: ResourceId, body: EvaluationRerun, service_row: OwnedService,
                      user: CurrentUser, db: Db, response: Response,
                      judge: Annotated[EvaluationJudge, Depends(get_evaluation_judge)],
@@ -209,9 +210,10 @@ def rerun_evaluation(evaluationId: ResourceId, body: EvaluationRerun, service_ro
     return create_evaluation(request, service_row, user, db, response, judge, idempotency_key)
 
 
-@router.get('/{evaluationId}/comparison', response_model=Data[dict])
+@router.get('/{evaluationId}/comparison', response_model=Data[EvaluationComparison])
 def compare_evaluations(evaluationId: ResourceId, service_row: OwnedService, db: Db,
-                        baselineEvaluationId: ResourceId | None = None, limit: Limit = 20, cursor: Cursor = None):
+                        baselineEvaluationId: Annotated[str | None, Query(min_length=1, max_length=100, pattern=r'^[A-Za-z0-9_-]+$',
+                            description='비교 기준 평가 ID. 생략하면 재실행 원본 sourceEvaluationId를 사용합니다. 원본이 없는 평가에서는 필수이며 없으면 400 BASELINE_REQUIRED입니다.')] = None, limit: Limit = 20, cursor: Cursor = None):
     target = service.get_run(db, service_row.id, evaluationId)
     baseline_id = baselineEvaluationId or target.inputs.get('sourceEvaluationId')
     if not baseline_id:

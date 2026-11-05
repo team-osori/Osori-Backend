@@ -37,7 +37,7 @@ class AuthConfig(BaseModel):
 class ConnectionPut(BaseModel):
     model_config = ConfigDict(extra='forbid')
     expectedRevision: Annotated[int, Field(ge=0, strict=True)]
-    executionMode: str
+    executionMode: Literal['PROMPT_BODY', 'CONNECTION_ONLY']
     method: Literal['POST']
     url: Annotated[str, Field(min_length=1, max_length=2048)]
     headers: dict[str, str]
@@ -52,7 +52,7 @@ class ConnectionPut(BaseModel):
     maxRetries: Annotated[int, Field(ge=0, le=2, strict=True)]
     retrySafe: bool
 
-    @field_validator('executionMode')
+    @field_validator('executionMode', mode='before')
     @classmethod
     def supported_mode(cls, value):
         if value not in ('PROMPT_BODY', 'CONNECTION_ONLY'):
@@ -117,7 +117,8 @@ class ConnectionTestCreate(BaseModel):
     model_config = ConfigDict(extra='forbid')
     connectionRevision: Annotated[int, Field(ge=1, strict=True)]
     question: Annotated[str, Field(min_length=1, max_length=4000)]
-    promptVersionId: Identifier | None = None
+    promptVersionId: Identifier | None = Field(default=None,
+        description='연동 설정이 PROMPT_BODY이면 필수입니다. 없으면 400 VALIDATION_ERROR입니다.')
 
     @field_validator('question')
     @classmethod
@@ -135,7 +136,7 @@ class ConnectionResponse(BaseModel):
     id: str
     serviceId: str
     revision: int
-    executionMode: str
+    executionMode: Literal['PROMPT_BODY', 'CONNECTION_ONLY']
     method: str
     url: str
     headers: dict[str, str]

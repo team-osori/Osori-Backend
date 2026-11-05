@@ -195,3 +195,14 @@ OSORI_TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/osori_test?ch
 ```
 
 실제 기업 API·판정 모델을 사용하는 테스트가 아니라 격리된 전송·판정 대역으로 로직을 검증합니다. 실제 API와 모델이 정해지면 연결 테스트와 확정 테스트셋으로 새 평가를 실행해 확인해야 합니다.
+
+## OpenAPI 계약 보완 (#19)
+
+- `criteria` 응답은 현재 v2의 `policy/questionResolution/communicationQuality`와 과거 v1의 `retrieval/grounding/response/policy`를 모델 union으로 구분합니다. 항목의 점수·근거·오류와 비교 응답의 조건별 변경·집계·커서도 명세에 포함합니다. `passRate`는 0~100 백분율이며 판정 분모가 0이면 null입니다.
+- 문항 목록의 `criterion`이 해당 평가 기준에 없으면 200과 빈 페이지를 반환합니다. `change`에는 `criterion`이 필요하며 SINGLE 평가는 `/comparison`으로 비교합니다.
+- `/comparison`은 `baselineEvaluationId`를 생략하면 재실행 원본을 사용합니다. 원본도 없으면 `400 BASELINE_REQUIRED`입니다.
+- `/reruns`는 종료된 SINGLE v2 평가만 지원합니다. 원본 질문·기준·모델·연동 설정 일치 제약은 유지합니다.
+- 삭제 API의 `If-Match`는 따옴표를 포함한 revision(예: `"3"`)입니다. 생략은 428, 형식 또는 값 불일치는 기존처럼 412입니다. 패턴은 OpenAPI에 명시하고 서버의 기존 오류 계약은 보존합니다.
+- `ConnectionPut.executionMode`는 `PROMPT_BODY/CONNECTION_ONLY` enum입니다. 연결 테스트의 `promptVersionId`는 PROMPT_BODY일 때 필수입니다.
+
+CI에서 OpenAPI 구조와 실제 API 응답·필터 동작을 회귀 검사합니다(`tests/test_openapi_contract.py` 및 평가 API 테스트).

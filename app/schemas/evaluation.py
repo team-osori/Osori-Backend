@@ -94,6 +94,16 @@ class Judgement(BaseModel):
     policy: CriterionResult
 
 
+class ScoredCriterionOutput(CriterionResult):
+    score: Annotated[int | None, Field(ge=0, le=4)]
+
+
+class ConditionCriteriaOutput(BaseModel):
+    policy: CriterionResult
+    questionResolution: ScoredCriterionOutput
+    communicationQuality: ScoredCriterionOutput
+
+
 class EvaluationCreate(BaseModel):
     model_config = ConfigDict(extra='forbid')
     connectionRevision: Annotated[int, Field(strict=True, ge=1, le=2**31 - 1)]
@@ -162,7 +172,7 @@ class EvaluationSide(BaseModel):
     attemptCount: int | None
     error: ExecutionError | None
     judgeError: ExecutionError | None
-    criteria: dict[str, dict]
+    criteria: ConditionCriteriaOutput | Judgement
     conditionResults: list[dict] = []
 
 
@@ -198,7 +208,7 @@ class CriterionCounts(BaseModel):
     inProgress: int
     notRun: int
     denominator: int
-    passRate: float | None
+    passRate: float | None = Field(description='통과율 백분율(0~100). 판정된 문항이 없으면 null입니다.')
 
 
 class ComparisonCounts(BaseModel):
@@ -225,9 +235,54 @@ class CriteriaSummary(BaseModel):
     policy: CriterionSummary
 
 
+class ConditionCriteriaSummary(BaseModel):
+    policy: CriterionSummary
+    questionResolution: CriterionSummary
+    communicationQuality: CriterionSummary
+
+
 class EvaluationSummary(BaseModel):
     evaluation: EvaluationResponse
-    criteria: dict[str, CriterionSummary]
+    criteria: ConditionCriteriaSummary | CriteriaSummary
     formula: str
     provisional: bool
     analysis: dict = {}
+
+
+class ConditionComparison(BaseModel):
+    conditionId: str
+    criterion: Literal['policy', 'questionResolution', 'communicationQuality', 'retrieval', 'grounding']
+    change: Literal['RESOLVED', 'REMAINING', 'NEW', 'UNCHANGED_PASS', 'NOT_COMPARABLE']
+    before: Literal['pass', 'fail'] | None
+    after: Literal['pass', 'fail'] | None
+
+
+class ComparisonItem(BaseModel):
+    questionId: str
+    baselineItemId: str | None
+    targetItemId: str | None
+    conditions: list[ConditionComparison]
+    baselineReviewRevision: int | None
+    targetReviewRevision: int | None
+
+
+class ConditionComparisonCounts(BaseModel):
+    RESOLVED: int
+    REMAINING: int
+    NEW: int
+    UNCHANGED_PASS: int
+    NOT_COMPARABLE: int
+
+
+class EvaluationComparison(BaseModel):
+    baselineEvaluationId: str
+    targetEvaluationId: str
+    outcome: Literal['MIXED', 'REGRESSED', 'INCOMPLETE', 'IMPROVED', 'NO_IMPROVEMENT']
+    counts: ConditionComparisonCounts
+    countUnit: Literal['CONDITION']
+    hasNewIssues: bool
+    hasIncompleteComparison: bool
+    basis: Literal['LATEST_HUMAN_CONDITION_REVIEW_OVER_AUTOMATIC']
+    externalEnvironmentControlled: Literal[False]
+    items: list[ComparisonItem]
+    nextCursor: str | None

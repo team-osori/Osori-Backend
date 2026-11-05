@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, Response
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
 
-from app.api.dependencies import CurrentUser, Db, OwnedProject, ResourceId
+from app.api.dependencies import IfMatch, CurrentUser, Db, OwnedProject, ResourceId
 from app.api.policies import Cursor, Limit
 from app.core.errors import ApiError
 from app.models.policy import GenerationRequest, QuestionHistory, TestQuestion, TestSet, TestSetVersion
@@ -177,7 +177,7 @@ def review_question(testSetId: ResourceId, versionId: ResourceId, questionId: Re
 
 @router.delete('/{testSetId}/versions/{versionId}/questions/{questionId}', status_code=204)
 def delete_question(testSetId: ResourceId, versionId: ResourceId, questionId: ResourceId, project: OwnedProject, user: CurrentUser, db: Db,
-                    if_match: Annotated[str | None, Header()] = None):
+                    if_match: IfMatch = None):
     """Remove a draft-only question using the current version revision as If-Match."""
     version = resolve(db, project.id, testSetId, versionId)
     if if_match is None:
