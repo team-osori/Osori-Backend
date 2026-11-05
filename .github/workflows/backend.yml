@@ -57,13 +57,13 @@ jobs:
             python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30 \
             python -I /source/tests/deployment_isolation_check.py
       - name: Run API and deployment tests
-        run: .venv/bin/python -m pytest -q --tb=short --ignore=tests/test_mysql_auth_integration.py --ignore=tests/test_mysql_connections_integration.py --ignore=tests/test_mysql_evaluations_integration.py --ignore=tests/test_mysql_cursors_integration.py --ignore=tests/test_mysql_question_conditions_integration.py
+        run: .venv/bin/python -m pytest -q --tb=short --ignore=tests/test_mysql_auth_integration.py --ignore=tests/test_mysql_connections_integration.py --ignore=tests/test_mysql_evaluations_integration.py --ignore=tests/test_mysql_cursors_integration.py --ignore=tests/test_mysql_question_conditions_integration.py --ignore=tests/test_mysql_prompt_suggestions_integration.py
       - name: Run MySQL concurrency and regression tests
         env:
           OSORI_TEST_MYSQL_URL: mysql+pymysql://osori_test:ci-test-only@127.0.0.1:3306/osori_test?charset=utf8mb4
           AUTH_SIGNUP_RATE_LIMIT: '1000'
           AUTH_LOGIN_RATE_LIMIT: '1000'
-        run: .venv/bin/python -m pytest -q --tb=short tests/test_mysql_auth_integration.py tests/test_mysql_connections_integration.py tests/test_mysql_evaluations_integration.py tests/test_mysql_cursors_integration.py tests/test_mysql_question_conditions_integration.py
+        run: .venv/bin/python -m pytest -q --tb=short tests/test_mysql_auth_integration.py tests/test_mysql_connections_integration.py tests/test_mysql_evaluations_integration.py tests/test_mysql_cursors_integration.py tests/test_mysql_question_conditions_integration.py tests/test_mysql_prompt_suggestions_integration.py
       - name: Check migrated MySQL schema against models
         env:
           DATABASE_URL: mysql+pymysql://osori_test:ci-test-only@127.0.0.1:3306/osori_test?charset=utf8mb4

@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Identifier = Annotated[str, Field(min_length=1, max_length=100, pattern=r'^[A-Za-z0-9_-]+$')]
 
@@ -31,6 +31,14 @@ class PromptCreate(PromptContent):
 
 class PromptVersionCreate(PromptContent):
     baseVersionId: Identifier
+    suggestionId: Identifier | None = None
+    suggestionRevision: Annotated[int | None, Field(strict=True, ge=1)] = None
+
+    @model_validator(mode='after')
+    def suggestion_pair(self):
+        if (self.suggestionId is None) != (self.suggestionRevision is None):
+            raise ValueError('suggestionId와 suggestionRevision을 함께 전달하세요.')
+        return self
 
 
 class PromptVersionSummary(BaseModel):
