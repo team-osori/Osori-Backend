@@ -75,7 +75,7 @@ def validate_generated(output, snapshot):
     allowed = {e['id'] for e in snapshot['evidence']}
     result = []
     for edit in parsed.suggestions:
-        if (content.count(edit.originalText) != 1 or edit.originalText == edit.replacementText
+        if (content.find(edit.originalText) < 0 or content.find(edit.originalText, content.find(edit.originalText) + 1) >= 0 or edit.originalText == edit.replacementText
                 or not edit.reason.strip() or len(set(edit.evidenceIds)) != len(edit.evidenceIds)
                 or not set(edit.evidenceIds) <= allowed):
             raise ValueError('Invalid source reference')
