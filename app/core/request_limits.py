@@ -18,13 +18,16 @@ class AuthRequestLimits:
             return
         headers = dict(scope['headers'])
         content_type = headers.get(b'content-type', b'').split(b';', 1)[0].strip().lower()
-        upload = scope['method'] == 'POST' and re.fullmatch(r'/api/projects/[A-Za-z0-9_-]+/policies/imports?', scope['path'])
+        csv_upload = scope['method'] == 'POST' and re.fullmatch(
+            r'/api/projects/[A-Za-z0-9_-]+/testsets/[A-Za-z0-9_-]+/versions/[A-Za-z0-9_-]+/questions/import', scope['path'])
+        upload = csv_upload or (scope['method'] == 'POST' and re.fullmatch(
+            r'/api/projects/[A-Za-z0-9_-]+/policies/imports?', scope['path']))
         allowed_type = b'multipart/form-data' if upload else b'application/json'
         if content_type != allowed_type:
             await error_response(scope, 415, 'UNSUPPORTED_MEDIA_TYPE',
                 'multipart/form-data 요청이 필요합니다.' if upload else 'JSON 요청이 필요합니다.')(scope, receive, send)
             return
-        upload_limit = (51 if scope['path'].endswith('/imports') else 11) * 1024 * 1024
+        upload_limit = (3 if csv_upload else 51 if scope['path'].endswith('/imports') else 11) * 1024 * 1024
         body = bytearray()
         while True:
             message = await receive()
