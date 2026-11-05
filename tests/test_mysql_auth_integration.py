@@ -285,7 +285,13 @@ def test_mysql_concurrent_generation_is_idempotent(mysql_client):
         def generate(self, **kwargs):
             """Capture invocations without any real model credentials."""
             calls.append(True)
-            return {'questions': [question]}
+            # The model returns semantic drafts; the server owns IDs and verbatim evidence.
+            behavior = question['expectedBehavior']
+            return {'questions': [{'question': question['question'], 'expectedBehavior': behavior,
+                'modelAnswer': behavior, 'forbiddenBehaviors': question.get('forbiddenBehaviors', []),
+                'ruleKeys': question['ruleKeys'], 'category': question.get('category', 'normal'),
+                'expectedConditions': [{'description': behavior, 'kind': 'required', 'category': 'policy',
+                                        'ruleKeys': question['ruleKeys']}]}]}
 
     app.dependency_overrides[get_question_generator] = lambda: Provider()
     barrier = Barrier(2)
