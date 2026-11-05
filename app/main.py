@@ -11,6 +11,7 @@ from app.api.auth import router
 from app.api.projects import router as project_router
 from app.api.connections import router as connection_router
 from app.api.prompts import router as prompt_router
+from app.api.prompt_suggestions import router as prompt_suggestion_router
 from app.api.policies import router as policy_router
 from app.api.testsets import router as testset_router
 from app.api.evaluations import router as evaluation_router
@@ -32,6 +33,7 @@ app.include_router(trash_router)
 app.include_router(project_router)
 app.include_router(connection_router)
 app.include_router(prompt_router)
+app.include_router(prompt_suggestion_router)
 app.include_router(policy_router)
 app.include_router(testset_router)
 app.include_router(evaluation_router)

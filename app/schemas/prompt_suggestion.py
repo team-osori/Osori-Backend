@@ -85,13 +85,19 @@ class SuggestionSummary(BaseModel):
     createdAt: str
 
 
-class SuggestionRerunLink(StrictModel):
-    evaluationId: Identifier
-
-
 class SuggestionRerunResponse(BaseModel):
     suggestionId: str
     baselineEvaluationId: str
     evaluationId: str
     promptVersionId: str
+    status: str
+    comparisonAvailable: bool
     comparisonUrl: str
+
+
+class SuggestionCapabilities(BaseModel):
+    generationSupported: bool
+    provider: str
+    diffSupported: bool = True
+    expectedImprovementCountSupported: bool = False
+    reason: str
