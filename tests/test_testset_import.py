@@ -55,3 +55,69 @@ def test_partial_evidence_and_unlinked_conditions_are_rejected(db_and_client):
             'expectedRevision': 1, **fields}, headers=headers)
         assert result.status_code == 400
     assert client.get(path, headers=headers).json()['data']['revision'] == 1
+
+
+def upload(client, path, headers, content, revision=1, filename='questions.csv'):
+    return client.post(path + '/questions/import', headers=headers, data={'expectedRevision': str(revision)},
+                       files={'file': (filename, content, 'text/csv')})
+
+
+def test_csv_bom_multiline_korean_types_and_atomic_retry(db_and_client):
+    _, client = db_and_client
+    headers, _, _, _, _, path, _ = setup(client)
+    content = '\ufeff질문,유형,모범 답안\r\n"질문, 하나\n두 줄",정상,"답안, 하나"\r\n질문2,모호,답안2\r\n질문3,문서 없음,답안3\r\n질문4,정책 함정,답안4\r\n'
+    result = upload(client, path, headers, content.encode())
+    assert result.status_code == 201, result.text
+    version = result.json()['data']
+    assert version['revision'] == 2 and version['questionCount'] == 4 and version['approvedCount'] == 0
+    by_type = {q['category']: q for q in version['questions']}
+    assert by_type['normal']['question'] == '질문, 하나\n두 줄'
+    assert by_type['normal']['modelAnswer'] == '답안, 하나'
+    assert all(q['expectedConditions'] is None and q['reviewStatus'] == 'pending' for q in by_type.values())
+    assert upload(client, path, headers, content.encode()).status_code == 409
+    history = client.get(path + '/history', headers=headers).json()['data']['items']
+    assert len(history) == 4 and all(h['note'] == 'CSV 가져오기' for h in history)
+    # Existing deletion flow applies to imports as well.
+    qpath = path + '/questions/' + by_type['normal']['id']
+    assert client.delete(qpath, headers={**headers, 'If-Match': '"2"'}).status_code == 204
+    assert client.get(path, headers=headers).json()['data']['questionCount'] == 3
+
+
+def test_csv_reports_all_invalid_rows_without_saving_valid_rows(db_and_client):
+    _, client = db_and_client
+    headers, _, _, _, _, path, _ = setup(client)
+    result = upload(client, path, headers, 'question,category,modelAnswer\n정상,normal,답안\n,wrong,\n열,개수\n')
+    assert result.status_code == 400, result.text
+    error = result.json()['error']
+    assert error['code'] == 'CSV_VALIDATION_ERROR' and error['requestId']
+    assert {e['field'] for e in error['fieldErrors']} == {'rows.3.question', 'rows.3.category', 'rows.3.modelAnswer', 'rows.4.row'}
+    assert client.get(path, headers=headers).json()['data']['revision'] == 1
+    assert client.get(path + '/history', headers=headers).json()['data']['items'] == []
+    assert upload(client, path, headers, 'question,category,modelAnswer\n정상,normal,답안\n').status_code == 201
+
+
+def test_csv_limits_format_capacity_and_scope(db_and_client, monkeypatch):
+    from app.services import question_import
+    from tests.test_policy_testsets import account
+    _, client = db_and_client
+    headers, _, _, _, _, path, _ = setup(client)
+    for content, code in [(b'\xff', 'CSV_ENCODING_INVALID'), ('', 'CSV_VALIDATION_ERROR'),
+        ('question,category,modelAnswer\n', 'CSV_EMPTY'),
+        ('question,category,modelAnswer\n"unterminated', 'CSV_VALIDATION_ERROR'),
+        ('question,question,modelAnswer\na,b,c', 'CSV_VALIDATION_ERROR'),
+        ('question,category,modelAnswer\na,normal,\x00', 'CSV_FORMAT_INVALID')]:
+        result = upload(client, path, headers, content)
+        assert result.status_code == 400 and result.json()['error']['code'] == code, result.text
+    assert upload(client, path, headers, 'x', filename='a.xlsx').status_code == 415
+    monkeypatch.setattr(question_import, 'MAX_CSV_BYTES', 10)
+    assert upload(client, path, headers, 'x' * 11).status_code == 413
+    monkeypatch.setattr(question_import, 'MAX_CSV_BYTES', 2 * 1024 * 1024)
+    monkeypatch.setattr(question_import, 'MAX_CSV_ROWS', 1)
+    content = 'question,category,modelAnswer\na,normal,b\nc,normal,d'
+    assert upload(client, path, headers, content).json()['error']['code'] == 'CSV_ROW_LIMIT_EXCEEDED'
+    monkeypatch.setattr(question_import, 'MAX_CSV_ROWS', 200)
+    monkeypatch.setattr('app.api.testsets.MAX_QUESTIONS', 1)
+    assert upload(client, path, headers, content).json()['error']['code'] == 'QUESTION_LIMIT_EXCEEDED'
+    other = account(client, 'other-import')
+    assert upload(client, path, other, content).status_code == 404
+    assert client.get(path, headers=headers).json()['data']['revision'] == 1

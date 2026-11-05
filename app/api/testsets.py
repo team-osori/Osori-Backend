@@ -3,13 +3,13 @@ import json
 from datetime import timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Response
+from fastapi import APIRouter, Depends, File, Form, Header, Request, Response, UploadFile
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
 
 from app.api.dependencies import IfMatch, CurrentUser, Db, OwnedProject, ResourceId
 from app.api.policies import Cursor, Limit
-from app.core.errors import ApiError
+from app.core.errors import ApiError, error_response
 from app.models.policy import GenerationRequest, QuestionHistory, TestQuestion, TestSet, TestSetVersion
 from app.schemas.policy import Generate, GeneratedQuestions, NewDraft, Rename, QuestionWrite, Review, Revision, TestSetCreate
 from app.schemas.responses import Data, Page, ERROR_RESPONSES
@@ -18,6 +18,7 @@ from app.services import policy as service
 from app.services.auth import now
 from app.services.question_generation import QuestionGenerator, get_question_generator
 from app.services.rate_limit import check_rate_limit
+from app.services.question_import import CsvValidationError, MAX_CSV_BYTES, parse_questions
 
 router = APIRouter(prefix='/api/projects/{projectId}/testsets', tags=['testsets'], responses=ERROR_RESPONSES)
 MAX_QUESTIONS = 200
@@ -135,6 +136,32 @@ def add_question(testSetId: ResourceId, versionId: ResourceId, body: QuestionWri
     service.record_history(db, version, row, user.id, 'created', note=body.changeNote)
     db.commit()
     response.headers['Location'] = f'/api/projects/{project.id}/testsets/{testSetId}/versions/{version.id}/questions/{row.id}'
+    return {'data': service.version_data(db, version)}
+
+
+@router.post('/{testSetId}/versions/{versionId}/questions/import', status_code=201, response_model=Data[TestSetVersionOut])
+def import_questions(testSetId: ResourceId, versionId: ResourceId, project: OwnedProject, user: CurrentUser,
+                     db: Db, request: Request,
+                     file: Annotated[UploadFile, File(description='UTF-8 CSV, 최대 2MiB·200행. question,category,modelAnswer 헤더')],
+                     expectedRevision: Annotated[int, Form(ge=1, le=2**31 - 1)]):
+    """Validate every row before atomically appending pending, unlinked questions."""
+    version = resolve(db, project.id, testSetId, versionId)
+    try:
+        if not (file.filename or '').lower().endswith('.csv'):
+            raise ApiError(415, 'CSV_FILE_REQUIRED', '.csv 파일을 업로드하세요.')
+        bodies = parse_questions(file.file.read(MAX_CSV_BYTES + 1))
+    except CsvValidationError as exc:
+        return error_response(request.scope, exc.status, exc.code, exc.message, field_errors=exc.field_errors)
+    finally:
+        file.file.close()
+    service.claim_draft(db, version, expectedRevision)
+    ensure_capacity(db, version.id, len(bodies))
+    for body in bodies:
+        row = TestQuestion(id=service.uid(), testset_version_id=version.id,
+            payload=service.question_payload(db, project.id, version, body), review_status='pending', created_at=now())
+        db.add(row)
+        service.record_history(db, version, row, user.id, 'created', note='CSV 가져오기')
+    db.commit()
     return {'data': service.version_data(db, version)}
 
 
