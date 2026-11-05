@@ -426,3 +426,25 @@ def test_unicode_offsets_and_ambiguous_anchor_validation():
     assert result['start'] == 4 and result['end'] == 6
     with pytest.raises(ValueError):
         validate_generated({'suggestions': [{**edit, 'originalText': 'aaa'}]}, {**base, 'content': 'aaaa'})
+
+
+@pytest.mark.parametrize('state', ['answer_conflict', 'review_pending', 'mixed_judge_error'])
+def test_screen_review_and_error_states_are_not_prompt_improvement_targets(suggested, state):
+    """#30 must consume #28/#29's current review-aware wrong-answer contract."""
+    from app.models.evaluation import EvaluationItem
+    factory, client, headers, _, source, item, generator, _ = suggested
+    if state == 'mixed_judge_error':
+        with factory() as db:
+            row = db.get(EvaluationItem, item['id'])
+            value = deepcopy(row.a)
+            value['criteria']['communicationQuality'].update(status='error', verdict=None, score=None,
+                evidence_refs=[], error={'code': 'JUDGE_FAILED', 'message': '판정 실패'})
+            row.a = value
+            db.commit()
+    else:
+        saved = client.post(source + '/items/' + item['id'] + '/answer-reviews', headers=headers, json={
+            'expectedRevision': 0, 'verdict': 'pass' if state == 'answer_conflict' else 'not_evaluable'})
+        assert saved.status_code == 201, saved.text
+    response = create(suggested)
+    assert response.status_code == 409 and response.json()['error']['code'] == 'NO_FAILED_CONDITION'
+    assert generator.calls == 0

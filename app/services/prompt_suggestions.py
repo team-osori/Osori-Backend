@@ -14,7 +14,7 @@ from app.models.prompt_suggestion import PromptSuggestion
 from app.schemas.prompt_suggestion import GeneratedSuggestions
 from app.services.auth import now
 from app.services.evaluation_analysis import item_analysis
-from app.services.evaluation_reviews import latest_reviews
+from app.services.evaluation_reviews import latest_reviews, latest_answer_reviews
 from app.services.evaluations import get_run
 from app.services.prompts import get_version
 
@@ -44,12 +44,15 @@ def source_snapshot(db, service_id, body, *, lock=False):
     if len(items) != len(body.itemIds):
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '평가 문항을 찾을 수 없습니다.')
     reviews = latest_reviews(db, body.itemIds)
+    answer_reviews = latest_answer_reviews(db, body.itemIds)
     policies = {p['id']: p['content'] for p in run.inputs['testSet']['policies']}
     evidence = []
     for item in items:
         if not item.a or item.a['callStatus'] != 'SUCCEEDED':
             raise ApiError(409, 'NO_FAILED_CONDITION', '성공한 답변의 미충족 조건을 선택하세요.')
-        detail = item_analysis(run, item, reviews)['a']
+        detail = item_analysis(run, item, reviews, answer_reviews)['a']
+        if detail['screenStatus'] != 'INCORRECT':
+            raise ApiError(409, 'NO_FAILED_CONDITION', '오류·미판정·검토 충돌을 해결한 오답만 선택하세요.')
         failed = [c for c in detail['conditions'] if c['judgment']
                   and c['judgment']['status'] == 'judged' and c['judgment']['verdict'] == 'fail']
         if not failed:
@@ -62,7 +65,8 @@ def source_snapshot(db, service_id, body, *, lock=False):
             evidence.append({'id': f'e{len(evidence) + 1}', 'itemId': item.id, 'questionId': item.question_id,
                 'question': item.input['question'], 'answer': item.a['answer'],
                 'reviewRevision': item.review_revision, 'condition': condition, 'issue': issue,
-                'facts': detail['facts'], 'hypotheses': detail['hypotheses'], 'limitations': detail['limitations']})
+                'facts': detail['facts'], 'hypotheses': [hypothesis for hypothesis in detail['activeHypotheses']
+                    if hypothesis['conditionId'] == condition['conditionId']], 'limitations': detail['limitations']})
     return {'promptId': base.prompt_id, 'content': base.content, 'itemIds': body.itemIds,
         'sourceHash': digest({'inputs': run.inputs, 'items': [
             [item.id, item.input, item.a, item.review_revision] for item in items]}),
