@@ -20,6 +20,17 @@ CRITERIA = {
 }
 
 
+def normalize_condition(condition):
+    """Read A source conditions and older B snapshots through one display contract."""
+    if 'description' in condition:
+        source = SourceCondition.model_validate(condition)
+        condition = {'id': source.id, 'criterion': 'questionResolution' if source.category == 'response' else source.category,
+            'requirement': source.description, 'policyVersionId': source.policyVersionId,
+            'sourceQuote': source.evidenceQuote, 'kind': source.kind, 'category': source.category,
+            'ruleKeys': source.ruleKeys}
+    return ExpectedCondition.model_validate(condition).model_dump()
+
+
 def prepare_questions(testset):
     """Normalize an immutable B snapshot without changing A's source records."""
     result = deepcopy(testset)
@@ -31,15 +42,7 @@ def prepare_questions(testset):
             conditions = legacy_conditions(question, question['id'])
         if not 1 <= len(conditions) <= 100:
             raise ValueError('Expected conditions must be bounded and nonempty')
-        parsed = []
-        for condition in conditions:
-            if 'description' in condition:
-                source = SourceCondition.model_validate(condition)
-                condition = {'id': source.id, 'criterion': 'questionResolution' if source.category == 'response' else source.category,
-                    'requirement': source.description, 'policyVersionId': source.policyVersionId,
-                    'sourceQuote': source.evidenceQuote, 'kind': source.kind, 'category': source.category,
-                    'ruleKeys': source.ruleKeys}
-            parsed.append(ExpectedCondition.model_validate(condition).model_dump())
+        parsed = [normalize_condition(condition) for condition in conditions]
         if len({condition['id'] for condition in parsed}) != len(parsed):
             raise ValueError('Duplicate condition IDs')
         for condition in parsed:
@@ -80,6 +83,13 @@ def validate_judgement(output, question, catalog):
                 raise ValueError('A condition verdict requires its policy source')
             if not any(ref['kind'] == 'answer' for ref in references):
                 raise ValueError('A condition verdict requires the evaluated answer')
+            quote = (decision.get('issue') or {}).get('answerQuote')
+            answer = next(source['text'] for source in catalog if source['kind'] == 'answer')
+            if quote and quote not in answer:
+                raise ValueError('Issue quote must be present verbatim in the evaluated answer')
+            hypothesis = (decision.get('issue') or {}).get('hypothesis')
+            if hypothesis and any(ref['evidence_id'] not in sources for ref in hypothesis['evidenceRefs']):
+                raise ValueError('A cause hypothesis must reference collected evidence')
     policy_decisions = [decision for decision in decisions if conditions[decision['conditionId']]['criterion'] == 'policy']
     if policy_decisions:
         expected = 'fail' if any(d['verdict'] == 'fail' for d in policy_decisions) else (

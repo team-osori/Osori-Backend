@@ -64,6 +64,24 @@ requirement/criterion/sourceQuote 필드로 정규화하며 A의 원본 레코�
 모델 제공사와 실제 API 형식은 미정이다. get_evaluation_judge의 어댑터 연결부를 사용하며
 현재 기본 어댑터는 모든 기준과 조건을 미판정으로 반환한다. 테스트 어댑터는 테스트에서만 사용한다.
 
+## 오류 상세와 결과 탐색
+
+미충족 조건 결과의 `issue`는 kind, answerQuote 또는 missingGuidance, recommendation을 포함한다.
+answerQuote는 실제 저장 답변의 부분 문자열이어야 하며, 없는 문장을 근거로 출력하면 판정 오류다.
+문장 누락은 가상의 인용문을 만들지 않고 missingGuidance로 표현한다.
+통과·미판정·오류 결과에는 issue를 붙이지 않는다.
+
+문항 상세의 `analysis.a.conditions`에는 조건 ID·분류·충족 조건·정책 버전/원문·판정이 연결되고,
+`analysis.a.issues`에는 미충족 조건의 문제와 개선 권고가 연결된다. 비교 실행은 analysis.b도 반환한다.
+기존 a/b 원문 결과도 함께 반환한다.
+
+문항 목록은 `resultStatus`, `issueKind`로 필터링한다. 기본 필터 대상은 A(단일 평가 대상)이다.
+대표 상태는 MET, UNMET, REVIEW_REQUIRED, JUDGMENT_ERROR, EXECUTION_ERROR, NOT_RUN, IN_PROGRESS다.
+미충족 조건과 다른 기준의 판정 오류가 함께 있으면 UNMET을 유지하면서
+hasJudgmentError/needsReview를 같이 표시한다. API 실패는 답변 미충족으로 세지 않는다.
+
+요약의 analysis.variants는 대표 상태별 문항 수, 검토 필요 수, 오류 유형별 건수를 반환한다.
+오류 유형은 한 문항에서 여러 번 발생할 수 있으므로 문항 수와 합계가 다를 수 있다.
 ## A 담당 구현과의 확정 연결 (PR #14 반영)
 
 A의 실제 조건 형식은 id, description, kind(required/forbidden), category,
