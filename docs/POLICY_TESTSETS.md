@@ -159,9 +159,13 @@ OSORI_TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/osori_test?ch
 
 테스트의 가짜 생성기는 테스트에서만 의존성 주입으로 사용합니다. 서비스 기본값에는 연결되지 않습니다. 만료된 생성 재사용 레코드는 기존 `python -m app.maintenance` 명령으로 정리하며 자동 예약은 구성하지 않습니다.
 
-## 정책 규칙 입력과 검증 (#21 요청안 3)
+## 정책 규칙 입력과 검증 (#21)
 
-현재 `POST /api/projects/{projectId}/policies`와 정책 버전 생성은 JSON의 `content`와 `rules`를 모두 요구합니다. 서버의 자동 규칙 추출, multipart 업로드, PDF/docx 텍스트 추출은 지원하지 않습니다. `rules`를 생략하면 400 `VALIDATION_ERROR`와 `fieldErrors[].code=REQUIRED`를 반환합니다. 정책 버전은 불변 원문이며 정책 자체에는 draft 상태가 없습니다. 질문은 별도의 draft 테스트셋에 생성하여 사람이 검토·확정합니다.
+`POST /api/projects/{projectId}/policies`는 `name/content/rules`를 보내면 기존처럼 201과 저장된 정책을 반환합니다. `rules`를 생략하거나 null로 보내면 생성 모델이 규칙을 추출하고 **200과 미저장 초안**(`name/content/rules/status: draft/persisted: false`)을 반환합니다. 원문과 규칙을 검토·수정한 뒤 `name/content/rules`만 다시 보내 저장하세요. 정책 버전 생성에는 기존처럼 rules가 필수입니다. 질문 검토·확정은 별도의 draft 테스트셋에서 진행합니다.
+
+`POST /api/projects/{projectId}/policies/import`는 multipart의 `name`과 `file`을 받습니다. PDF/DOCX/UTF-8 TXT/MD를 텍스트로 추출한 후 동일한 규칙 초안을 반환합니다. 업로드는 10MiB, PDF는 50페이지, 추출 원문은 100,000자까지입니다. 텍스트를 포함하지 않은 스캔 PDF는 `DOCUMENT_TEXT_NOT_FOUND`, 암호화 PDF는 `DOCUMENT_ENCRYPTED`(400)입니다. OCR은 지원하지 않습니다. 파일은 보관하지 않으며 PDF/DOCX 파싱은 20초 제한 subprocess에서 수행합니다(Linux: 512MiB 메모리·15초 CPU 제한).
+
+모델은 현재 질문 생성의 제공사·모델·자격 증명 설정을 재사용합니다(Bedrock IAM 역할 또는 OpenAI 키). 규칙 추출은 별도 `PolicyExtractor` 경계이며 미설정/지원하지 않는 제공사는 `503 POLICY_EXTRACTION_NOT_CONFIGURED`로 명시합니다. Bedrock은 기존 Converse 호출 모듈을 재사용하며 배포·제공사 설정을 변경하지 않습니다. 모델 호출은 사용자별 분당 10회이며 실패도 포함합니다. `POLICY_EXTRACTION_INVALID/INCOMPLETE/REFUSED`(502), `POLICY_EXTRACTION_TIMEOUT`(504)를 구분합니다. 원문 인용은 공백 차이만 실제 원문으로 복원하며, 문서에 없는 근거나 중복 key는 저장 없이 거절합니다. 생성 결과의 의미적 적합성은 사용자가 검토해야 합니다.
 
 - `content`: 공백뿐이 아닌 원문 1~100,000자. 원문의 공백·줄바꿈을 보존합니다.
 - `rules`: 1~100개. `key`는 영문·숫자·밑줄·하이픈 1~100자이며 정책 버전 안에서 대소문자를 구분하여 유일해야 합니다.

@@ -37,6 +37,8 @@ class PolicyBody(Input):
     @classmethod
     def evidence_matches(cls, rules, info: ValidationInfo):
         """Require unique rule keys and verbatim supporting passages in the original text."""
+        if rules is None:
+            return rules
         seen = set()
         for index, rule in enumerate(rules):
             if rule.key in seen:
@@ -49,6 +51,14 @@ class PolicyBody(Input):
 
 class PolicyCreate(PolicyBody):
     name: Name
+    rules: Annotated[list[Rule] | None, Field(min_length=1, max_length=100,
+        description='생략하면 모델이 규칙을 추출해 미저장 draft를 반환합니다. 명시하면 검증 후 정책을 저장합니다.')] = None
+
+
+class PolicyDraft(PolicyBody):
+    name: Name
+    status: Literal['draft'] = 'draft'
+    persisted: Literal[False] = False
 
 
 class PolicyVersionCreate(PolicyBody):

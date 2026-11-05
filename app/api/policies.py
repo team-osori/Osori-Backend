@@ -1,25 +1,42 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Header, Query, Response
+from fastapi import APIRouter, Depends, File, Form, Header, Query, Response, UploadFile
 from sqlalchemy import select, update
 
-from app.api.dependencies import IfMatch, Db, OwnedProject, ResourceId
+from app.api.dependencies import IfMatch, CurrentUser, Db, OwnedProject, ResourceId
 from app.core.errors import ApiError
 from app.models.policy import Policy, PolicyVersion
-from app.schemas.policy import PolicyCreate, PolicyVersionCreate
+from app.schemas.policy import PolicyCreate, PolicyVersionCreate, PolicyDraft, Name
 from app.schemas.responses import Data, Page, ERROR_RESPONSES
 from app.schemas.policy import PolicyOut, PolicyDetail, PolicyVersionOut
 from app.services import policy as service
 from app.services.auth import now
+from app.services.policy_extraction import PolicyExtractor, extract_rules, get_policy_extractor
+from app.services.policy_documents import extract_document, MAX_FILE_BYTES
+from app.services.rate_limit import check_rate_limit
+
+Extractor = Annotated[PolicyExtractor, Depends(get_policy_extractor)]
 
 router = APIRouter(prefix='/api/projects/{projectId}/policies', tags=['policies'], responses=ERROR_RESPONSES)
 Limit = Annotated[int, Query(ge=1, le=100)]
 Cursor = Annotated[str | None, Query(min_length=1, max_length=2048)]
 
 
-@router.post('', status_code=201, response_model=Data[PolicyDetail])
-def create_policy(body: PolicyCreate, project: OwnedProject, db: Db, response: Response):
+def make_draft(name, content, extractor, db, user):
+    retry_after = check_rate_limit(db, user.id, 'policy-extraction', 10)
+    if retry_after is not None:
+        raise ApiError(429, 'RATE_LIMITED', '규칙 추출 요청이 너무 많습니다.', headers={'Retry-After': str(retry_after)})
+    rules = extract_rules(extractor, content)
+    return PolicyDraft(name=name, content=content, rules=rules)
+
+
+@router.post('', status_code=201, response_model=Data[PolicyDetail | PolicyDraft],
+    responses={200: {'model': Data[PolicyDraft], 'description': 'rules 생략 시 미저장 규칙 초안'}})
+def create_policy(body: PolicyCreate, project: OwnedProject, user: CurrentUser, db: Db, response: Response, extractor: Extractor):
     """Save an original policy and its first immutable human-authored rule version."""
+    if body.rules is None:
+        response.status_code = 200
+        return {'data': make_draft(body.name, body.content, extractor, db, user)}
     row = Policy(id=service.uid(), project_id=project.id, name=body.name, revision=1, deleted=False, created_at=now())
     db.add(row)
     db.flush()
@@ -31,6 +48,18 @@ def create_policy(body: PolicyCreate, project: OwnedProject, db: Db, response: R
     db.refresh(version)
     response.headers['Location'] = f'/api/projects/{project.id}/policies/{row.id}'
     return {'data': {'policy': service.policy_data(row), 'version': service.policy_version_data(version)}}
+
+
+@router.post('/import', response_model=Data[PolicyDraft])
+def import_policy(project: OwnedProject, user: CurrentUser, db: Db, extractor: Extractor,
+                  file: Annotated[UploadFile, File(description='10MiB 이하 PDF/DOCX/UTF-8 TXT/MD. PDF 최대 50페이지, OCR 미지원')],
+                  name: Annotated[Name, Form()]):
+    """문서 원문과 규칙 초안을 반환합니다. 검토 후 name/content/rules를 정책 생성 API로 보내 저장하세요."""
+    try:
+        content = extract_document(file.file.read(MAX_FILE_BYTES + 1), file.filename)
+    finally:
+        file.file.close()
+    return {'data': make_draft(name, content, extractor, db, user)}
 
 
 @router.get('', response_model=Data[Page[PolicyOut]])

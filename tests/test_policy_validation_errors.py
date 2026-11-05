@@ -38,6 +38,6 @@ def test_rule_errors_identify_safe_field_and_preserve_versions(db_and_client, ki
 
 def test_policy_schema_documents_client_rules_and_verbatim_quotes():
     schemas = app.openapi()['components']['schemas']
-    assert 'rules' in schemas['PolicyCreate']['required']
-    assert '자동 규칙 추출' in schemas['PolicyCreate']['properties']['rules']['description']
+    assert 'rules' not in schemas['PolicyCreate']['required']
+    assert '미저장 draft' in schemas['PolicyCreate']['properties']['rules']['description']
     assert '공백·줄바꿈' in schemas['Rule']['properties']['sourceQuote']['description']
