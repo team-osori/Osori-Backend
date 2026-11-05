@@ -161,3 +161,32 @@ def test_mysql_cancel_resume_preserves_uncertain_calls(mysql_client, monkeypatch
     client, factory, _, _ = mysql_client
     headers, service, original, _ = prepare(factory, client, monkeypatch, question_count=2)
     exercise_cancel_running(factory, client, headers, service, original)
+
+
+def test_mysql_answer_and_condition_reviews_share_revision(mysql_client, monkeypatch):
+    """O/X and condition writes race on the same item CAS, across separate history tables."""
+    from app.models.evaluation import EvaluationAnswerReview, EvaluationReview
+    from test_condition_evaluation import ConditionJudge, run_condition
+    client, factory, _, _ = mysql_client
+    headers, service, original, _ = prepare(factory, client, monkeypatch)
+    body = {key: original[key] for key in ('connectionRevision', 'testSetVersionId')}
+    path, detail = run_condition((factory, client, headers, service, body, original), ConditionJudge())
+    endpoint = path + '/items/' + detail['id']
+    barrier = Barrier(2)
+
+    def save(scope):
+        payload = {'expectedRevision': 0, 'verdict': 'pass', 'reason': '정책과 답변 확인'}
+        if scope == 'reviews':
+            payload['conditionId'] = detail['input']['expectedConditions'][0]['id']
+        barrier.wait(timeout=10)
+        return client.post(endpoint + '/' + scope, headers=headers, json=payload)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(save, ['answer-reviews', 'reviews']))
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    after = client.get(endpoint, headers=headers).json()['data']
+    assert after['reviewRevision'] == 1 and after['a'] == detail['a']
+    with factory() as db:
+        conditions = db.scalars(select(EvaluationReview).where(EvaluationReview.item_id == detail['id'])).all()
+        answers = db.scalars(select(EvaluationAnswerReview).where(EvaluationAnswerReview.item_id == detail['id'])).all()
+        assert len(conditions) + len(answers) == 1
