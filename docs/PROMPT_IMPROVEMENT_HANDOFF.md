@@ -1,6 +1,6 @@
 # 프롬프트 수정 제안 입력 계약 (#30·31)
 
-기준: origin/main `a68eba7`. 별도 `prompt-suggestions` 모듈이 기존
+입력 계약 최초 기준: origin/main `a68eba7`. PR 전 `05ba5b3`(#25 병합)을 반영했다. 별도 `prompt-suggestions` 모듈이 기존
 `evaluation_analysis.item_analysis`와 `latest_reviews`를 사용한다.
 평가·시험지·CSV·오답 분석의 저장 형식은 변경하지 않는다.
 
@@ -170,7 +170,7 @@ previewContent를 그대로 기존 버전 저장 API에 전달한다.
 
 ## 마이그레이션·검증
 
-전용 revision `20261105_3031`, 부모 `20261105_11`. 기존 평가/버전 테이블은 변경하지 않는다.
+전용 revision `20261105_3031`, 부모 `20261105_25`. 기존 평가/버전 테이블은 변경하지 않는다.
 프로젝트 영구 삭제 시 evaluation FK의 cascade가 제안을 먼저 제거하므로 기존 버전 정리가
 막히지 않는다. 병합 직전 최신 main head가 변경되면 down_revision을 다시 연결해야 한다.
 
