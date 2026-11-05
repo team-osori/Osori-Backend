@@ -47,6 +47,18 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     for error in exc.errors():
         location = error.get('loc', ())
         field = '.'.join(str(part) for part in location[1:]) or 'body'
+        policy_errors = {
+            'policy_rule_key_duplicate': ('POLICY_RULE_KEY_DUPLICATE', 'key', '정책 버전 안에서 규칙 key는 중복될 수 없습니다.'),
+            'policy_rule_source_mismatch': ('POLICY_RULE_SOURCE_MISMATCH', 'sourceQuote', 'sourceQuote는 공백·줄바꿈을 포함해 content의 연속 원문과 일치해야 합니다.'),
+        }
+        if error.get('type') in policy_errors:
+            code, member, message = policy_errors[error['type']]
+            # Only an internally supplied integer and fixed messages are exposed.
+            index = error.get('ctx', {}).get('rule_index')
+            if type(index) is int and index >= 0:
+                field += f'.{index}.{member}'
+            field_errors.append({'field': field, 'code': code, 'message': message})
+            continue
         code = 'REQUIRED' if error.get('type') == 'missing' else 'INVALID'
         field_errors.append({'field': field, 'code': code, 'message': '필수 항목입니다.' if code == 'REQUIRED' else '유효하지 않은 값입니다.'})
     return error_response(request.scope, 400, 'VALIDATION_ERROR', '입력값을 확인해 주세요.', field_errors=field_errors)
