@@ -4,6 +4,10 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 from app.schemas.policy import Id
 
+CauseArea = Literal['RETRIEVAL', 'PROMPT', 'MODEL']
+AnalysisStatus = Literal['HYPOTHESIS_AVAILABLE', 'UNDETERMINED', 'UNAVAILABLE', 'NOT_APPLICABLE']
+ScreenStatus = Literal['CORRECT', 'INCORRECT', 'PENDING', 'REMAINING', 'EXECUTION_ERROR', 'JUDGMENT_ERROR', 'REVIEW_REQUIRED']
+
 Criterion = Literal['retrieval', 'grounding', 'response', 'policy', 'questionResolution', 'communicationQuality']
 
 
@@ -178,12 +182,16 @@ class EvaluationItemSummary(BaseModel):
     id: str
     questionId: str
     question: str
+    questionNumber: int | None = None
     status: Literal['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'NOT_RUN', 'INTERRUPTED']
     aCallStatus: Literal['NOT_RUN', 'RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED']
     bCallStatus: Literal['NOT_APPLICABLE', 'NOT_RUN', 'RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED']
     changes: dict[str, str]
     resultStatus: str | None = None
     needsReview: bool = False
+    screenStatus: ScreenStatus
+    analysisStatus: AnalysisStatus
+    activeHypothesisAreas: list[CauseArea]
 
 
 class EvaluationSide(BaseModel):
@@ -199,11 +207,57 @@ class EvaluationSide(BaseModel):
     conditionResults: list[dict] = []
 
 
+class PromptContext(BaseModel):
+    source: Literal['SELECTED_VERSION', 'CONFIGURED_TEMPLATE', 'UNAVAILABLE']
+    available: bool
+    promptVersionId: str | None
+    promptId: str | None
+    version: int | None
+    content: str | None
+    pointer: str | None
+    connectionRevision: int | None
+    applicationVerified: bool
+
+
+class AnalysisHypothesis(BaseModel):
+    conditionId: str
+    area: CauseArea
+    reason: str
+    evidenceRefs: list[EvidenceReference]
+
+
+class ItemAnalysis(BaseModel):
+    status: str
+    screenStatus: ScreenStatus
+    derivedScreenStatus: ScreenStatus
+    needsReview: bool
+    hasJudgmentError: bool
+    hasUnevaluableCriteria: bool
+    conditions: list[dict]
+    issues: list[dict]
+    humanReviewApplied: bool
+    causeStatus: Literal['HYPOTHESIS', 'UNDETERMINED']
+    confirmedCause: None
+    facts: dict
+    hypotheses: list[AnalysisHypothesis]
+    limitations: list[str]
+    activeHypotheses: list[AnalysisHypothesis]
+    activeHypothesisAreas: list[CauseArea]
+    analysisStatus: AnalysisStatus
+    hypothesesBasis: Literal['AUTOMATIC']
+    activeHypothesesBasis: Literal['LATEST_HUMAN_CONDITION_REVIEW_OVER_AUTOMATIC']
+    promptContext: PromptContext
+    answerReview: dict | None
+    reviewConflict: bool
+
+
 class EvaluationItemResponse(EvaluationItemSummary):
+    previousItemId: str | None = None
+    nextItemId: str | None = None
     input: dict
     a: EvaluationSide | None
     b: EvaluationSide | None
-    analysis: dict = {}
+    analysis: dict[str, ItemAnalysis] = {}
     reviewRevision: int = 0
     latestReviews: list[dict] = []
 
@@ -221,7 +275,17 @@ class EvaluationInputs(BaseModel):
     sourceEvaluationId: str | None = None
 
 
+class ScoreSummary(BaseModel):
+    average: float | None
+    denominator: int
+    minimum: int = 0
+    maximum: int = 4
+    passThreshold: int
+    basis: Literal['AUTOMATIC'] = 'AUTOMATIC'
+
+
 class CriterionCounts(BaseModel):
+    scoreSummary: ScoreSummary | None = None
     passed: int = Field(alias='pass')
     fail: int
     notEvaluable: int
@@ -264,12 +328,41 @@ class ConditionCriteriaSummary(BaseModel):
     communicationQuality: CriterionSummary
 
 
+class ScreenCounts(BaseModel):
+    correct: int
+    incorrect: int
+    pending: int
+    remaining: int
+    executionError: int
+    judgmentError: int
+    reviewRequired: int
+    total: int
+
+
+class AnalysisVariantSummary(BaseModel):
+    statuses: dict[str, int]
+    needsReviewCount: int
+    issueTypes: dict[str, int]
+    screenCounts: ScreenCounts
+    causeQuestionCounts: dict[CauseArea, int]
+    analysisStatusCounts: dict[AnalysisStatus, int]
+
+
+class AnalysisSummary(BaseModel):
+    variants: dict[str, AnalysisVariantSummary]
+    issueCountsIncludeMultipleIssuesPerQuestion: bool
+    causeCountsIncludeMultipleAreasPerQuestion: bool
+    causeCountUnit: Literal['QUESTION']
+    basis: Literal['LATEST_HUMAN_CONDITION_REVIEW_OVER_AUTOMATIC']
+    criterionPassRatesBasis: Literal['AUTOMATIC']
+
+
 class EvaluationSummary(BaseModel):
     evaluation: EvaluationResponse
     criteria: ConditionCriteriaSummary | CriteriaSummary
     formula: str
     provisional: bool
-    analysis: dict = {}
+    analysis: AnalysisSummary
 
 
 class ConditionComparison(BaseModel):

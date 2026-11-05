@@ -114,6 +114,8 @@ def item_summary(row, inputs=None):
     """Keep list responses bounded by excluding answer and document bodies."""
     single = inputs is not None and inputs.get('mode') == 'SINGLE'
     return {'id': row.id, 'questionId': row.question_id, 'question': row.input['question'],
+        'questionNumber': next((index for index, question in enumerate(
+            (inputs or {}).get('testSet', {}).get('questions', []), 1) if question['id'] == row.question_id), None),
         'status': row.status, 'aCallStatus': row.a['callStatus'] if row.a else 'NOT_RUN',
         'bCallStatus': 'NOT_APPLICABLE' if single else row.b['callStatus'] if row.b else 'NOT_RUN',
         'changes': {} if single else {key: change(row.a, row.b, key) for key in
@@ -142,8 +144,17 @@ def criterion_summary(inputs, rows):
                     counts['judgeFailed'] += 1
                 else:
                     counts[{'PASS': 'pass', 'FAIL': 'fail', 'NOT_EVALUABLE': 'notEvaluable'}[verdict(side, key)]] += 1
+            scored = key in inputs.get('criteria', {}).get('scoringAnchors', {})
+            scores = [side['criteria'][key]['score'] for row in rows
+                      if (side := getattr(row, side_name)) and side['callStatus'] == 'SUCCEEDED'
+                      and side['criteria'][key]['status'] == 'judged'
+                      and side['criteria'][key].get('score') is not None] if scored else []
+            score_summary = {'average': round(sum(scores) / len(scores), 2) if scores else None,
+                             'denominator': len(scores), 'minimum': 0, 'maximum': 4,
+                             'passThreshold': inputs['criteria']['passThreshold'],
+                             'basis': 'AUTOMATIC'} if scored else None
             denominator = counts['pass'] + counts['fail']
-            entry[side_name] = {**counts, 'denominator': denominator,
+            entry[side_name] = {**counts, 'scoreSummary': score_summary, 'denominator': denominator,
                 'passRate': round(counts['pass'] / denominator * 100, 2) if denominator else None}
         if inputs.get('mode') == 'SINGLE':
             results[key] = {**entry, 'b': None, 'comparison': None}
