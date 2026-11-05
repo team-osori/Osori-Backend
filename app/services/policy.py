@@ -103,8 +103,66 @@ def source_quote(quote, content, *, normalize_whitespace=False):
     return quote
 
 
+def repair_generated_evidence(db, project_id, version, body: QuestionBody) -> QuestionBody:
+    """Fix two observed model slips in generated drafts before the usual strict validation.
+
+    1. The model copies `policyId` into `policyVersionId` (they sit side by side in the payload).
+       Map it back only when it names exactly one policy included in this test-set version.
+    2. The model joins real sentences from different places into one quote. When every sentence of
+       the quote exists in the source, keep the first one as the (contiguous) quote. A quote with any
+       sentence that is not in the source is left unchanged so fabricated evidence is still rejected.
+    3. The model adds a rule key that does not exist next to real ones. Drop only the unknown keys;
+       if none of the cited keys exist, leave them so the question is still rejected.
+    Human-written questions never pass through here.
+    """
+    sources = policy_versions(db, project_id, version.policy_version_ids, allow_deleted=True)
+    by_policy = {}
+    for source in sources:
+        by_policy.setdefault(source.policy_id, []).append(source)
+    by_version = {source.id: source for source in sources}
+
+    def resolve(policy_version_id):
+        if policy_version_id in by_version:
+            return policy_version_id
+        matches = by_policy.get(policy_version_id) or []
+        return matches[0].id if len(matches) == 1 else policy_version_id
+
+    def repair_quote(policy_version_id, quote):
+        source = by_version.get(policy_version_id)
+        if source is None or quote is None:
+            return quote
+        if source_quote(quote, source.content, normalize_whitespace=True) in source.content:
+            return quote
+        sentences = [part.strip() for part in re.split(r'(?<=[.!?。])\s+', quote) if part.strip()]
+        spans = [source_quote(part, source.content, normalize_whitespace=True) for part in sentences]
+        if len(sentences) > 1 and all(span in source.content for span in spans):
+            return spans[0]
+        return quote
+
+    def known_keys(policy_version_id, keys):
+        source = by_version.get(policy_version_id)
+        if source is None:
+            return keys
+        valid = {rule['key'] for rule in source.rules}
+        kept = [key for key in keys if key in valid]
+        return kept or keys
+
+    body = body.model_copy(deep=True)
+    if body.policyVersionId is not None:
+        body.policyVersionId = resolve(body.policyVersionId)
+        body.evidenceQuote = repair_quote(body.policyVersionId, body.evidenceQuote)
+        body.ruleKeys = known_keys(body.policyVersionId, body.ruleKeys)
+    for condition in body.expectedConditions or []:
+        condition.policyVersionId = resolve(condition.policyVersionId)
+        condition.evidenceQuote = repair_quote(condition.policyVersionId, condition.evidenceQuote)
+        condition.ruleKeys = known_keys(condition.policyVersionId, condition.ruleKeys)
+    return body
+
+
 def question_payload(db, project_id, version, body: QuestionBody, *, previous=None, generated=False):
     """Allow unlinked drafts; validate all supplied evidence and preserve condition IDs."""
+    if generated:
+        body = repair_generated_evidence(db, project_id, version, body)
     if body.policyVersionId is None:
         if generated:
             raise ApiError(400, 'INVALID_POLICY_EVIDENCE', '생성 문항에는 실제 정책 근거가 필요합니다.')

@@ -206,3 +206,54 @@ def test_rejected_questions_capacity_and_api_contract(db_and_client, monkeypatch
     cors = client.options(qpath, headers={'Origin': 'http://localhost:5173',
         'Access-Control-Request-Method': 'PATCH', 'Access-Control-Request-Headers': 'authorization,content-type,if-match,idempotency-key'})
     assert cors.status_code == 200
+
+
+def test_generation_repairs_policy_id_and_joined_quotes(db_and_client):
+    """Model slips seen with Bedrock Haiku: policyId instead of the version ID and quotes joined across places."""
+    _, client = db_and_client
+    headers, _, _, source, _, path, question = setup(client)
+    slipped = {**question, 'policyVersionId': source['policy']['id'], 'ruleKeys': ['refund', 'MADE_UP_RULE'],
+               # 원문의 두 문장을 순서를 바꿔 이어 붙임 → 원문의 연속 구간은 아니지만 문장은 모두 원문에 있음
+               'evidenceQuote': '임의 보상은 금지합니다. 예약 취소는 출발 24시간 전까지 가능합니다.',
+               'expectedConditions': [{'description': '취소 기한을 안내한다.', 'policyVersionId': source['policy']['id'],
+                                       'ruleKeys': ['refund'], 'evidenceQuote': '예약 취소는 출발 24시간 전까지 가능합니다.'}]}
+
+    class Slipping:
+        def generate(self, *, policies, count):
+            return {'questions': [deepcopy(slipped) for _ in range(count)]}
+
+    app.dependency_overrides[get_question_generator] = lambda: Slipping()
+    response = client.post(path + '/questions/generate', json={'expectedRevision': 1, 'count': 1},
+                           headers={**headers, 'Idempotency-Key': 'slip-1'})
+    assert response.status_code == 200, response.text
+    saved = response.json()['data']['questions'][0]
+    assert saved['policyVersionId'] == source['version']['id']
+    assert saved['evidenceQuote'] == '임의 보상은 금지합니다.'
+    assert saved['ruleKeys'] == ['refund']
+    assert saved['expectedConditions'][0]['policyVersionId'] == source['version']['id']
+    assert saved['expectedConditions'][0]['evidenceQuote'] == '예약 취소는 출발 24시간 전까지 가능합니다.'
+
+
+def test_human_questions_are_not_repaired(db_and_client):
+    """Only generated drafts are repaired; a person must still pick a real version and quote."""
+    _, client = db_and_client
+    headers, _, _, source, _, path, question = setup(client)
+    wrong_id = client.post(path + '/questions', json={**question, 'policyVersionId': source['policy']['id'], 'expectedRevision': 1}, headers=headers)
+    assert wrong_id.status_code == 400
+    wrong_quote = client.post(path + '/questions', json={**question, 'evidenceQuote': '취소는 24시간 전까지', 'expectedRevision': 1}, headers=headers)
+    assert wrong_quote.status_code == 400
+
+
+def test_generation_still_rejects_only_unknown_rules(db_and_client):
+    """If none of the cited rule keys exist the generated batch is rejected as before."""
+    _, client = db_and_client
+    headers, _, _, _, _, path, question = setup(client)
+
+    class Unknown:
+        def generate(self, *, policies, count):
+            return {'questions': [{**question, 'ruleKeys': ['MADE_UP_RULE']}]}
+
+    app.dependency_overrides[get_question_generator] = lambda: Unknown()
+    response = client.post(path + '/questions/generate', json={'expectedRevision': 1, 'count': 1},
+                           headers={**headers, 'Idempotency-Key': 'unknown-1'})
+    assert response.status_code == 502 and response.json()['error']['code'] == 'GENERATION_EVIDENCE_INVALID'
