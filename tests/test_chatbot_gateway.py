@@ -172,11 +172,13 @@ def test_header_auth_and_connection_only():
     ('unexpected', [], 'INVALID_UPSTREAM_RESPONSE'),
 ])
 def test_retrieval_json_transport(monkeypatch, documents, citations, code):
+    """Parse real JSON transport shapes and reject invalid retrieval evidence."""
     import json
     raw = json.dumps({'answer': '답변', 'retrieval': {'documents': documents}, 'citations': citations}).encode()
 
     class Content:
         async def iter_chunked(self, size):
+            """Stream an in-memory response body through the production size and JSON parser."""
             yield raw
 
     class Response:
@@ -184,18 +186,24 @@ def test_retrieval_json_transport(monkeypatch, documents, citations, code):
         content = Content()
         headers = {}
         async def __aenter__(self):
+            """Enter the in-memory transport response context."""
             return self
         async def __aexit__(self, *args):
+            """Release the transport test context and its connector where applicable."""
             pass
 
     class Session:
         def __init__(self, **kwargs):
+            """Keep the isolated connector available for deterministic transport cleanup."""
             self.connector = kwargs['connector']
         async def __aenter__(self):
+            """Enter the in-memory transport response context."""
             return self
         async def __aexit__(self, *args):
+            """Release the transport test context and its connector where applicable."""
             await self.connector.close()
         def post(self, *args, **kwargs):
+            """Return a local response without performing an HTTP request."""
             return Response()
 
     monkeypatch.setattr(gateway.aiohttp, 'ClientSession', Session)
@@ -211,7 +219,9 @@ def test_retrieval_json_transport(monkeypatch, documents, citations, code):
 
 
 def test_credential_echo_is_removed_from_retrieval_evidence():
+    """Mask credential echoes in both answers and referenced retrieval text."""
     async def sender(*args):
+        """Simulate the company transport without opening a network connection."""
         return gateway.ChatbotReply('answer secret', {'documents': [{'id': 'd', 'text': 'source secret'}],
             'citations': [{'documentId': 'd', 'quote': 'source secret'}]})
 

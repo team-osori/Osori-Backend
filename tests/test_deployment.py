@@ -85,6 +85,7 @@ def test_worker_finishes_current_job_before_stopping(monkeypatch):
 
 
 def test_release_health_requires_every_worker(tmp_path):
+    """Fail release readiness when any individual API or worker unit is inactive."""
     import subprocess
     source = (Path(__file__).resolve().parents[1] / 'deploy/deploy.sh').read_text()
     start = source.index('all_services_ready() {')

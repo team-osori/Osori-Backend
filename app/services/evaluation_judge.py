@@ -19,7 +19,7 @@ class EvaluationJudge(Protocol):
         """Return non-secret adapter/model identity persisted at submission."""
         ...
 
-    async def judge(self, *, question: dict, answer: str, evidence: dict, policies: list, criteria: dict) -> Judgement:
+    async def judge(self, *, question: dict, answer: str, evidence: dict, policies: list, criteria: dict, evidence_catalog: list) -> Judgement:
         """Judge one response using frozen inputs; never include credentials in output or logs."""
         ...
 
@@ -32,8 +32,9 @@ class UnconfiguredJudge:
 
     async def judge(self, **kwargs):
         """Keep every criterion ungraded while preserving the completed company response."""
-        return Judgement.model_validate({key: {'status': 'NOT_EVALUABLE', 'reason': '평가 모델 미연결', 'evidence': []}
-                                        for key in CRITERIA['definitions']})
+        return Judgement.model_validate({key: {'question_id': kwargs['question']['id'],
+            'status': 'not_evaluable', 'verdict': None, 'reason': '평가 모델 미연결', 'evidence_refs': [], 'error': None}
+            for key in CRITERIA['definitions']})
 
 
 def get_evaluation_judge() -> EvaluationJudge:

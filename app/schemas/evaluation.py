@@ -5,7 +5,6 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 from app.schemas.policy import Id
 
 Criterion = Literal['retrieval', 'grounding', 'response', 'policy']
-Verdict = Literal['PASS', 'FAIL', 'NOT_EVALUABLE']
 
 
 class RetrievalDocument(BaseModel):
@@ -43,11 +42,48 @@ class Evidence(BaseModel):
         return self
 
 
+class ExecutionError(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    code: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+    message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
+
+
+class EvidenceReference(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    evidence_id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+    explanation: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
+
+
+class EvidenceSource(BaseModel):
+    evidence_id: str
+    kind: Literal['answer', 'policy', 'retrieval']
+    source_id: str | None
+
+
 class CriterionResult(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    status: Verdict
+    question_id: Annotated[str, StringConstraints(min_length=1, max_length=36)]
+    status: Literal['judged', 'not_evaluable', 'error']
+    verdict: Literal['pass', 'fail'] | None
     reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
-    evidence: Annotated[list[Annotated[str, StringConstraints(min_length=1, max_length=2000, pattern=r'\S')]], Field(max_length=20)] = Field(default_factory=list)
+    evidence_refs: Annotated[list[EvidenceReference], Field(max_length=20)]
+    error: ExecutionError | None
+
+    @model_validator(mode='after')
+    def validate_outcome(self):
+        """A missing judgement or execution error cannot masquerade as a pass/fail verdict."""
+        ids = [ref.evidence_id for ref in self.evidence_refs]
+        if len(ids) != len(set(ids)):
+            raise ValueError('Duplicate evidence references')
+        if self.status == 'judged':
+            if self.verdict is None or not self.evidence_refs or self.error is not None:
+                raise ValueError('Judged results require a verdict and evidence without an error')
+        elif self.status == 'not_evaluable':
+            if self.verdict is not None or self.error is not None:
+                raise ValueError('An unavailable judgement cannot have a verdict or error')
+        elif self.verdict is not None or self.error is None or self.evidence_refs:
+            raise ValueError('Errors require error details and no verdict or evidence')
+        return self
 
 
 class Judgement(BaseModel):
@@ -89,15 +125,11 @@ class EvaluationItemSummary(BaseModel):
     changes: dict[str, str]
 
 
-class ExecutionError(BaseModel):
-    code: str
-    message: str
-
-
 class EvaluationSide(BaseModel):
     callStatus: Literal['SUCCEEDED', 'FAILED']
     answer: str | None
     evidence: Evidence
+    evidenceCatalog: list[EvidenceSource]
     latencyMs: int
     attemptCount: int
     error: ExecutionError | None
@@ -125,6 +157,7 @@ class CriterionCounts(BaseModel):
     passed: int = Field(alias='pass')
     fail: int
     notEvaluable: int
+    judgeFailed: int
     callFailed: int
     notRun: int
     denominator: int

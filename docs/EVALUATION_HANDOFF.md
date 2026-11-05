@@ -45,7 +45,7 @@
 }
 ```
 
-필드 경로만 변경할 수 있으며 documents·citations 내부 구조는 위 계약을 따릅니다. 설정된 경로가 응답에서 빠지면 잘못된 응답으로 처리하므로, 미제공은 해당 위치에 `null`을 반환하거나 연결 설정에서 경로를 생략합니다. `citationsPointer`만 설정하고 문서 없이 실제 인용을 반환할 수는 없습니다. 설정 변경은 연결 revision을 올리고 기존 연결 검증을 해제하므로 다시 연결 테스트를 진행하세요.
+필드 경로만 변경할 수 있으며 documents·citations 내부 구조는 위 계약을 따릅니다. 설정된 경로가 응답에서 빠지면 잘못된 응답으로 처리하므로, 미제공은 해당 위치에 `null`을 반환하거나 연결 설정에서 경로를 생략합니다. `citationsPointer`를 설정하려면 `retrievalPointer`도 있어야 하며, 문서 없는 인용 설정은 저장 시점에 400으로 거부합니다. 설정 변경은 연결 revision을 올리고 기존 연결 검증을 해제하므로 다시 연결 테스트를 진행하세요.
 
 ## 실행 준비
 
@@ -105,8 +105,8 @@ Content-Type: application/json
 - `COMPLETED`: 모든 문항의 A/B 호출·처리가 끝났습니다. 정책을 모두 통과했다거나 AI 판정이 모두 가능하다는 의미는 아닙니다.
 - `PARTIAL_FAILED`: 일부 호출에 실패했고, 저장된 성공 답변도 있습니다.
 - `FAILED`: 모든 호출에 실패하거나 실행 설정을 사용할 수 없습니다.
-- 문항의 A/B에는 각각 `callStatus`, `answer`, `evidence`, `latencyMs`, `attemptCount`, `error`, `judgeError`, `criteria`가 저장됩니다. A 호출 실패여도 B와 다음 문항은 계속 실행합니다.
-- AI 판정 실패는 `judgeError`와 `NOT_EVALUABLE`로 표시하고 성공한 기업 답변은 보존합니다.
+- 문항의 A/B에는 각각 `callStatus`, `answer`, `evidence`, `evidenceCatalog`, `latencyMs`, `attemptCount`, `error`, `judgeError`, `criteria`가 저장됩니다. A 호출 실패여도 B와 다음 문항은 계속 실행합니다.
+- AI 호출·출력 검증 실패는 `judgeError`와 기준별 `status=error`, `verdict=null`로 표시하고 성공한 기업 답변은 보존합니다.
 
 DB 큐는 프로세스 재시작 후에도 유지합니다. 여러 워커가 실행을 중복 수행하지 않도록 원자적으로 선점하고 쓰기 전에 lease를 검사합니다. RUNNING에서 heartbeat가 10분 동안 갱신되지 않으면 `WORKER_INTERRUPTED`로 종료하며 이미 저장된 A/B 결과는 보존합니다. 실제 외부 호출이 완료됐는지 모르는 작업은 자동으로 재전송하지 않습니다. 사용자가 새 요청 키로 다시 실행할 수 있습니다. SIGTERM/SIGINT를 받으면 현재 문항 처리를 마치고 나머지 문항은 `WORKER_STOPPED`로 종료합니다.
 
@@ -123,22 +123,50 @@ DB 큐는 프로세스 재시작 후에도 유지합니다. 여러 워커가 실
 - response: 기대 행동에 맞는 명확한 답변인가.
 - policy: 정책·금지 행동을 준수하는가.
 
-각 기준은 `{ "status": "PASS | FAIL | NOT_EVALUABLE", "reason": "판정 이유", "evidence": ["원문 인용"] }` 형태입니다. PASS·FAIL에는 답변·정책 원문·검색 문서 중 실제 존재하는 비어 있지 않은 인용이 필요합니다. 워커는 30초 제한·출력 구조·인용 존재를 검사하며 잘못된 출력은 `INVALID_JUDGE_OUTPUT`으로 처리합니다. 어댑터는 정책·질문·기업 답변을 신뢰할 수 없는 평가 자료로 취급하고, 그 안의 지시가 평가 기준이나 시스템 지시를 덮어쓰지 않도록 작성해야 합니다.
+모델은 `retrieval`, `grounding`, `response`, `policy` 네 키를 가진 객체를 반환합니다. 각 값은 사용자가 정한 아래 형식을 따릅니다. 이 예시는 `criteria.policy` 한 개의 결과입니다. 실제 question_id에는 요청받은 문항 UUID를 그대로 넣습니다.
 
-현재 기본 어댑터는 네 기준 모두 `NOT_EVALUABLE`, `judgeError=JUDGE_NOT_CONFIGURED`를 반환합니다. 검색 정보가 미제공이면 모델이 연결되어도 retrieval·grounding은 `NOT_EVALUABLE`입니다. `documents: []`는 자료가 없는 검색 결과 자체를 평가할 수 있습니다. 모델이 연결되기 전에 종료한 결과를 자동 재판정하지 않습니다. 모델 연결 후 새 실행을 제출하세요.
+```json
+{
+  "question_id": "q_001",
+  "status": "judged",
+  "verdict": "pass",
+  "reason": "정책에 문의 답변 기한이 명시되어 있다.",
+  "evidence_refs": [
+    {
+      "evidence_id": "ev_002",
+      "explanation": "영업일 기준 3일이라는 구체적인 기한을 확인했다."
+    }
+  ],
+  "error": null
+}
+```
+
+| status | verdict | evidence_refs | error |
+| --- | --- | --- | --- |
+| judged | pass 또는 fail | 1개 이상, 중복 ID 불가 | null |
+| not_evaluable | null | 빈 목록 가능 | null |
+| error | null | 빈 목록 | code·message 객체 |
+
+모든 상태에 비어 있지 않은 reason이 필요합니다. 어댑터는 `question_id`와 원문 근거의 ID를 생성하지 않습니다. 워커가 질문 ID와 함께 `evidence_catalog`를 제공하며 각 항목에는 `evidence_id`, `kind`, `source_id`, `text`가 있습니다. 이 ID들은 해당 실행·문항·A/B 한쪽의 범위에서 유효합니다. `ev_001`은 답변, 그 뒤에는 정책 버전과 검색 문서 순서로 ID를 부여합니다.
+
+문항 상세의 `a.evidenceCatalog`·`b.evidenceCatalog`에는 text를 중복 저장하지 않고 ID·kind·source_id 연결을 제공합니다. kind=answer는 해당 쪽의 answer, kind=policy는 `/inputs`의 testSet.policies에서 source_id와 id가 같은 정책 버전의 content, kind=retrieval은 해당 쪽 evidence.documents에서 id가 source_id와 같은 문서의 text로 원문을 확인합니다. `explanation`은 모델의 해석이며 그 자체를 원문으로 취급하지 않습니다.
+
+워커는 30초 제한·네 기준의 출력 구조·상태와 verdict 조합·요청한 question_id 일치·근거 ID 존재를 검사합니다. 잘못된 출력은 `INVALID_JUDGE_OUTPUT`입니다. 근거 설명의 의미적 정확성은 선택한 모델과 실제 사례로 검증해야 합니다. 어댑터는 정책·질문·기업 답변을 신뢰할 수 없는 평가 자료로 취급하고, 그 안의 지시가 평가 기준이나 시스템 지시를 덮어쓰지 않도록 작성해야 합니다.
+
+현재 기본 어댑터는 네 기준 모두 `status=not_evaluable`, `verdict=null`, `judgeError=JUDGE_NOT_CONFIGURED`를 반환합니다. 검색 정보가 미제공이면 모델이 연결되어도 retrieval·grounding은 `status=not_evaluable`, `verdict=null`입니다. `documents: []`는 자료가 없는 검색 결과 자체를 평가할 수 있습니다. 모델이 연결되기 전에 종료한 결과를 자동 재판정하지 않습니다. 모델 연결 후 새 실행을 제출하세요.
 
 ## 통과율과 비교
 
-`통과율 = PASS / (PASS + FAIL) × 100`으로 계산하고 소수 둘째 자리까지 표시합니다. NOT_EVALUABLE·호출 실패·아직 실행하지 않은 문항은 분모에서 제외하며 각각 `notEvaluable`, `callFailed`, `notRun`으로 제공합니다. 분모가 0이면 `passRate: null`입니다. 기준들을 임의로 합친 종합 점수는 만들지 않습니다. 진행 중 summary는 `provisional: true`입니다.
+`통과율 = pass / (pass + fail) × 100`으로 계산하고 소수 둘째 자리까지 표시합니다. status가 not_evaluable·error인 판정, 기업 호출 실패, 아직 실행하지 않은 문항은 분모에서 제외하며 각각 `notEvaluable`, `judgeFailed`, `callFailed`, `notRun`으로 제공합니다. 분모가 0이면 `passRate: null`입니다. 기준들을 임의로 합친 종합 점수는 만들지 않습니다. 진행 중 summary는 `provisional: true`입니다.
 
-A/B 비교는 **같은 문항·같은 기준에서 양쪽 모두 PASS/FAIL로 판정한 경우**만 사용합니다.
+A/B 비교는 **같은 문항·같은 기준에서 양쪽 모두 status=judged이며 verdict가 pass/fail인 경우**만 사용합니다.
 
 | A → B | 분류 |
 | --- | --- |
-| FAIL → PASS | IMPROVED |
-| PASS → FAIL | WORSENED |
-| PASS → PASS | UNCHANGED_PASS |
-| FAIL → FAIL | UNCHANGED_FAIL |
+| fail → pass | IMPROVED |
+| pass → fail | WORSENED |
+| pass → pass | UNCHANGED_PASS |
+| fail → fail | UNCHANGED_FAIL |
 | 한쪽이라도 미실행·실패·판정 불가 | NOT_COMPARABLE |
 
 예: `/items?criterion=policy&change=IMPROVED`. change 필터에는 criterion이 필요합니다. comparison의 `pairedDenominator`, `aPairedPassRate`, `bPairedPassRate`로 같은 비교 가능 문항 집합의 통과율을 확인할 수 있습니다. A/B 개별 passRate는 판정 가능한 문항 집합이 다를 수 있으므로 이것만으로 개선을 단정하지 마세요.

@@ -62,7 +62,8 @@ def verdict(side, criterion):
     """Call failures and unfinished sides cannot become policy failures or successes."""
     if side is None or side['callStatus'] != 'SUCCEEDED':
         return None
-    return side['criteria'][criterion]['status']
+    result = side['criteria'][criterion]
+    return result['verdict'].upper() if result['status'] == 'judged' else 'NOT_EVALUABLE'
 
 
 def change(a, b, criterion):
@@ -88,13 +89,15 @@ def aggregate(run, rows):
     for key in CRITERION_KEYS:
         entry = {}
         for side_name in ('a', 'b'):
-            counts = {'pass': 0, 'fail': 0, 'notEvaluable': 0, 'callFailed': 0, 'notRun': 0}
+            counts = {'pass': 0, 'fail': 0, 'notEvaluable': 0, 'judgeFailed': 0, 'callFailed': 0, 'notRun': 0}
             for row in rows:
                 side = getattr(row, side_name)
                 if side is None:
                     counts['notRun'] += 1
                 elif side['callStatus'] == 'FAILED':
                     counts['callFailed'] += 1
+                elif side['criteria'][key]['status'] == 'error':
+                    counts['judgeFailed'] += 1
                 else:
                     counts[{'PASS': 'pass', 'FAIL': 'fail', 'NOT_EVALUABLE': 'notEvaluable'}[verdict(side, key)]] += 1
             denominator = counts['pass'] + counts['fail']

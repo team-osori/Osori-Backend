@@ -25,16 +25,17 @@ LEASE_SECONDS = 600
 JUDGE_TIMEOUT_SECONDS = 30
 
 
-def ungraded(reason):
-    """Represent missing judgement explicitly instead of inventing passes or failures."""
-    return {key: {'status': 'NOT_EVALUABLE', 'reason': reason, 'evidence': []} for key in CRITERION_KEYS}
+def ungraded(reason, question_id, error=None):
+    """Keep the model's criterion result contract even when no judgement is available."""
+    return {key: {'question_id': question_id, 'status': 'error' if error else 'not_evaluable',
+        'verdict': None, 'reason': reason, 'evidence_refs': [], 'error': deepcopy(error)} for key in CRITERION_KEYS}
 
 
-def failed_side(code, message):
+def failed_side(code, message, question_id):
     """Keep execution failures out of pass-rate denominators."""
-    return {'callStatus': 'FAILED', 'answer': None, 'evidence': Evidence().model_dump(),
+    return {'callStatus': 'FAILED', 'answer': None, 'evidence': Evidence().model_dump(), 'evidenceCatalog': [],
             'latencyMs': 0, 'attemptCount': 0, 'error': {'code': code, 'message': message},
-            'judgeError': None, 'criteria': ungraded('호출 또는 실행 실패')}
+            'judgeError': None, 'criteria': ungraded('호출 또는 실행 실패', question_id)}
 
 
 def close_interrupted(db, run, code='WORKER_INTERRUPTED'):
@@ -43,9 +44,9 @@ def close_interrupted(db, run, code='WORKER_INTERRUPTED'):
     for item in items:
         if item.status in ('QUEUED', 'RUNNING'):
             if item.a is None:
-                item.a = failed_side(code, '작업 실행이 중단되어 결과를 확인할 수 없습니다.')
+                item.a = failed_side(code, '작업 실행이 중단되어 결과를 확인할 수 없습니다.', item.question_id)
             if item.b is None:
-                item.b = failed_side(code, '작업 실행이 중단되어 결과를 확인할 수 없습니다.')
+                item.b = failed_side(code, '작업 실행이 중단되어 결과를 확인할 수 없습니다.', item.question_id)
             item.status = 'FAILED'
     db.flush()
     finish(db, run, items)
@@ -75,29 +76,39 @@ def expire_abandoned(factory):
         db.commit()
 
 
+def evidence_catalog(inputs, answer, evidence):
+    """Give the judge bounded, server-owned reference IDs tied to exact snapshot sources."""
+    sources = [{'kind': 'answer', 'source_id': None, 'text': answer}]
+    sources.extend({'kind': 'policy', 'source_id': p['id'], 'text': p['content']}
+                   for p in inputs['testSet']['policies'])
+    sources.extend({'kind': 'retrieval', 'source_id': doc['id'], 'text': doc['text']}
+                   for doc in evidence.get('documents') or [])
+    return [{'evidence_id': f'ev_{index:03d}', **source} for index, source in enumerate(sources, 1)]
+
+
 async def judge_response(judge, inputs, question, answer, evidence):
-    """Validate judge output and source quotes; suppress unsupported retrieval judgements."""
+    """Validate question identity, result states and references to the server-owned catalog."""
     error = None
+    catalog = evidence_catalog(inputs, answer, evidence)
+    allowed = {source['evidence_id'] for source in catalog}
     try:
         async with asyncio.timeout(JUDGE_TIMEOUT_SECONDS):
             output = await judge.judge(question=deepcopy(question), answer=answer, evidence=deepcopy(evidence),
-                policies=deepcopy(inputs['testSet']['policies']), criteria=deepcopy(inputs['criteria']))
+                policies=deepcopy(inputs['testSet']['policies']), criteria=deepcopy(inputs['criteria']),
+                evidence_catalog=deepcopy(catalog))
         output = Judgement.model_validate(output).model_dump()
-        corpus = [answer, *[p['content'] for p in inputs['testSet']['policies']],
-                  *[doc['text'] for doc in evidence.get('documents') or []]]
         for result in output.values():
-            if result['status'] in ('PASS', 'FAIL') and (not result['evidence'] or
-                    any(not any(quote in text for text in corpus) for quote in result['evidence'])):
-                raise ValueError('Unsupported judgement evidence')
+            if result['question_id'] != question['id'] or any(ref['evidence_id'] not in allowed for ref in result['evidence_refs']):
+                raise ValueError('Question or evidence identity mismatch')
     except TimeoutError:
-        output = ungraded('평가 모델 응답 시간 초과')
         error = {'code': 'JUDGE_TIMEOUT', 'message': '평가 모델 응답 시간이 초과되었습니다.'}
+        output = ungraded('평가 모델 응답 시간 초과', question['id'], error)
     except Exception:
-        output = ungraded('평가 모델 오류 또는 잘못된 판정 근거')
         error = {'code': 'INVALID_JUDGE_OUTPUT', 'message': '유효한 평가 판정을 받지 못했습니다.'}
+        output = ungraded('평가 모델 오류 또는 잘못된 판정 근거', question['id'], error)
     if evidence.get('documents') is None:
         for key in ('retrieval', 'grounding'):
-            output[key] = {'status': 'NOT_EVALUABLE', 'reason': '기업 API의 검색 근거 자료 미제공', 'evidence': []}
+            output[key] = ungraded('기업 API의 검색 근거 자료 미제공', question['id'])[key]
     if inputs['judge']['adapter'] == 'unconfigured':
         error = {'code': 'JUDGE_NOT_CONFIGURED', 'message': '평가 모델이 아직 연결되지 않았습니다.'}
     return output, error
@@ -109,16 +120,18 @@ async def execute_side(inputs, question, side, secret, judge, sender):
         result = await execute_chatbot(deepcopy(inputs['connection']['config']), question['question'],
             inputs['prompts'][side]['content'], secret, sender=sender)
         if result.error:
-            failed = failed_side(result.error['code'], result.error['message'])
+            failed = failed_side(result.error['code'], result.error['message'], question['id'])
             failed.update(latencyMs=result.latency_ms, attemptCount=result.attempt_count)
             return failed
         evidence = Evidence.model_validate(result.evidence or {}).model_dump()
         criteria, judge_error = await judge_response(judge, inputs, question, result.answer, evidence)
         return {'callStatus': 'SUCCEEDED', 'answer': result.answer, 'evidence': evidence,
+                'evidenceCatalog': [{k: v for k, v in source.items() if k != 'text'}
+                                    for source in evidence_catalog(inputs, result.answer, evidence)],
                 'latencyMs': result.latency_ms, 'attemptCount': result.attempt_count, 'error': None,
                 'judgeError': judge_error, 'criteria': criteria}
     except Exception:
-        return failed_side('EXECUTION_ERROR', '문항 실행 중 오류가 발생했습니다.')
+        return failed_side('EXECUTION_ERROR', '문항 실행 중 오류가 발생했습니다.', question['id'])
 
 
 def locked_run(db, run_id, token):

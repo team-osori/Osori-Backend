@@ -15,11 +15,13 @@ from test_mysql_auth_integration import mysql_client  # noqa: F401 - shared fixt
 
 
 def test_mysql_duplicate_submission_and_two_worker_claims(mysql_client, monkeypatch):
+    """Verify MySQL serializes duplicate submissions and prevents duplicate A/B calls."""
     client, factory, _, _ = mysql_client
     headers, service, body, _ = prepare(factory, client, monkeypatch)
     barrier = Barrier(2)
 
     def create():
+        """Race two equal idempotency keys against the real MySQL unique constraint."""
         barrier.wait(timeout=10)
         return client.post(service + '/evaluations', headers={**headers, 'Idempotency-Key': 'same'}, json=body)
 
@@ -32,11 +34,13 @@ def test_mysql_duplicate_submission_and_two_worker_claims(mysql_client, monkeypa
     calls = []
 
     async def sender(config, payload, outgoing):
+        """Simulate the company transport without opening a network connection."""
         calls.append(payload['messages'][0]['content'])
         await asyncio.sleep(0.05)
         return '기업 답변'
 
     def execute():
+        """Start a worker concurrently to detect duplicate company API calls."""
         start.wait(timeout=10)
         return asyncio.run(worker.process_one(factory, sender=sender))
 
@@ -52,6 +56,7 @@ def test_mysql_duplicate_submission_and_two_worker_claims(mysql_client, monkeypa
 
 
 def test_mysql_queue_survives_fresh_worker_process(mysql_client, monkeypatch):
+    """Process persisted work and decrypt submitted credentials in a fresh process."""
     client, factory, env, root = mysql_client
     headers, service, body, _ = prepare(factory, client, monkeypatch)
     path = submit(client, headers, service, body)

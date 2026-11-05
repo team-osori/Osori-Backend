@@ -85,6 +85,8 @@ class ConnectionPut(BaseModel):
         for pointer in (self.retrievalPointer, self.citationsPointer):
             if pointer is not None:
                 tokens(pointer)
+        if self.citationsPointer is not None and self.retrievalPointer is None:
+            raise ValueError('citationsPointer를 사용하려면 retrievalPointer가 필요합니다.')
         if self.executionMode == 'PROMPT_BODY':
             if self.promptPointer is None:
                 raise ValueError('promptPointer가 필요합니다.')

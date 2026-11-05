@@ -22,6 +22,7 @@ from test_policy_testsets import setup as setup_policy
 
 
 def prepare(factory, client, monkeypatch, question_count=1):
+    """Create reviewed inputs and a verified connection in an isolated database."""
     monkeypatch.setenv('CONNECTION_ENCRYPTION_KEY', Fernet.generate_key().decode())
     headers, project, policy, source, testset, path, question = setup_policy(client, login='eval' + uuid4().hex[:20])
     revision = 1
@@ -49,17 +50,20 @@ def prepare(factory, client, monkeypatch, question_count=1):
 
 @pytest.fixture
 def ready(db_and_client, monkeypatch):
+    """Provide an owner-scoped service ready to submit one A/B evaluation."""
     factory, client = db_and_client
     return factory, client, *prepare(factory, client, monkeypatch)
 
 
 def submit(client, headers, service, body, key='evaluation-1'):
+    """Submit a uniquely keyed evaluation and return its polling location."""
     response = client.post(service + '/evaluations', headers={**headers, 'Idempotency-Key': key}, json=body)
     assert response.status_code == 202, response.text
     return response.headers['location']
 
 
 async def plain_answer(*args):
+    """Supply a fixed company answer without any external API call."""
     return '예약 취소는 출발 24시간 전까지 가능합니다.'
 
 
@@ -67,14 +71,20 @@ class TestJudge:
     __test__ = False
 
     def descriptor(self):
+        """Identify the test adapter for submission-to-worker configuration matching."""
         return {'adapter': 'test-only-v1', 'provider': 'local-test', 'model': 'fake'}
 
-    async def judge(self, *, answer, **kwargs):
-        return {key: {'status': 'PASS' if answer.startswith('B:') else 'FAIL',
-            'reason': '테스트 판정', 'evidence': ['출발 24시간 전까지']} for key in CRITERIA['definitions']}
+    async def judge(self, *, answer, question, evidence_catalog, **kwargs):
+        """Return controlled criterion results using the server-provided evidence catalog."""
+        source = next(entry for entry in evidence_catalog if entry['kind'] == 'policy')
+        return {key: {'question_id': question['id'], 'status': 'judged',
+            'verdict': 'pass' if answer.startswith('B:') else 'fail', 'reason': '테스트 판정',
+            'evidence_refs': [{'evidence_id': source['evidence_id'], 'explanation': '정책에서 취소 기한을 확인했다.'}],
+            'error': None} for key in CRITERIA['definitions']}
 
 
 def test_submission_idempotency_validation_and_ownership(ready):
+    """Reject conflicting keys and foreign owners while replaying accepted requests."""
     factory, client, headers, service, body, _ = ready
     path = submit(client, headers, service, body)
     assert submit(client, headers, service, body) == path
@@ -104,6 +114,7 @@ def test_submission_idempotency_validation_and_ownership(ready):
 
 
 def test_default_judge_preserves_frozen_sources_without_inventing_grades(ready):
+    """Use submitted sources after connection edits and keep unconfigured grades unavailable."""
     factory, client, headers, service, body, source_path = ready
     path = submit(client, headers, service, body)
     frozen = client.get(path + '/inputs', headers=headers).json()['data']
@@ -114,6 +125,7 @@ def test_default_judge_preserves_frozen_sources_without_inventing_grades(ready):
     calls = []
 
     async def sender(config, payload, outgoing):
+        """Simulate the company transport without opening a network connection."""
         calls.append(deepcopy(payload))
         assert config['url'] == CONFIG['url']
         assert outgoing['Authorization'] == 'Bearer test-only-secret-token'
@@ -143,6 +155,7 @@ def test_default_judge_preserves_frozen_sources_without_inventing_grades(ready):
 
 
 def test_real_judgement_boundary_and_improvement_filter(ready):
+    """Resolve valid source references and expose only genuinely comparable pairs."""
     factory, client, headers, service, body, _ = ready
     judge = TestJudge()
     app.dependency_overrides[get_evaluation_judge] = lambda: judge
@@ -151,6 +164,7 @@ def test_real_judgement_boundary_and_improvement_filter(ready):
                 'citations': [{'documentId': 'refund-v2-section-3', 'quote': '출발 24시간 전까지'}]}
 
     async def sender(config, payload, outgoing):
+        """Simulate the company transport without opening a network connection."""
         return ChatbotReply(('B:' if payload['messages'][0]['content'] == 'B prompt' else 'A:') + '출발 24시간 전까지', evidence)
 
     asyncio.run(worker.process_one(factory, sender=sender, judge=judge))
@@ -166,16 +180,23 @@ def test_real_judgement_boundary_and_improvement_filter(ready):
     assert client.get(path + '/items', headers=headers, params={'change': 'IMPROVED'}).status_code == 400
     detail = client.get(path + '/items/' + items[0]['id'], headers=headers).json()['data']
     assert detail['b']['evidence']['documents'][0]['id'] == 'refund-v2-section-3'
-    assert detail['b']['criteria']['policy']['evidence'] == ['출발 24시간 전까지']
+    assert detail['b']['criteria']['policy']['evidence_refs'][0]['evidence_id'] == 'ev_002'
+    assert detail['b']['criteria']['policy']['verdict'] == 'pass'
+    catalog = detail['b']['evidenceCatalog']
+    policy_source = next(source for source in catalog if source['evidence_id'] == 'ev_002')
+    assert policy_source['kind'] == 'policy'
+    assert policy_source['source_id'] == client.get(path + '/inputs', headers=headers).json()['data']['testSet']['policies'][0]['id']
 
 
 def test_partial_call_failure_and_judge_failure_are_separate(ready):
+    """Preserve the successful variant and exclude the failed call from pass rates."""
     factory, client, headers, service, body, _ = ready
     judge = TestJudge()
     app.dependency_overrides[get_evaluation_judge] = lambda: judge
     path = submit(client, headers, service, body)
 
     async def sender(config, payload, outgoing):
+        """Simulate the company transport without opening a network connection."""
         if payload['messages'][0]['content'] == 'A prompt':
             raise GatewayError('UPSTREAM_AUTH_FAILED', '기업 챗봇 인증 실패')
         return 'B: 출발 24시간 전까지'
@@ -192,6 +213,7 @@ def test_partial_call_failure_and_judge_failure_are_separate(ready):
 
 
 def test_lease_expiry_preserves_saved_side_and_never_replays(ready):
+    """End an abandoned run without discarding or replaying saved responses."""
     factory, client, headers, service, body, _ = ready
     path = submit(client, headers, service, body)
     with factory() as db:
@@ -201,7 +223,7 @@ def test_lease_expiry_preserves_saved_side_and_never_replays(ready):
         row.heartbeat_at = now() - timedelta(seconds=worker.LEASE_SECONDS + 1)
         item = db.scalar(select(EvaluationItem))
         item.status = 'RUNNING'
-        item.a = {'callStatus': 'SUCCEEDED', 'answer': '保存済み', 'criteria': worker.ungraded('미연결')}
+        item.a = {'callStatus': 'SUCCEEDED', 'answer': '保存済み', 'criteria': worker.ungraded('미연결', item.question_id)}
         db.commit()
 
     async def forbidden(*args):
@@ -218,6 +240,7 @@ def test_lease_expiry_preserves_saved_side_and_never_replays(ready):
 
 
 def test_draft_rejected_judge_change_and_idempotency_expiry(ready):
+    """Reject unconfirmed inputs and changed adapters while preserving expired-key history."""
     factory, client, headers, service, body, version_path = ready
     clone = client.post(version_path.rsplit('/versions/', 1)[0] + '/versions', headers=headers,
         json={'sourceVersionId': body['testSetVersionId'], 'expectedRevision': 1})
@@ -240,34 +263,46 @@ def test_draft_rejected_judge_change_and_idempotency_expiry(ready):
     assert client.get(path + '/items', headers=headers, params={'cursor': 'broken'}).status_code == 400
 
 
-@pytest.mark.parametrize('mode', ['missing-evidence', 'unknown-quote', 'timeout', 'exception'])
+@pytest.mark.parametrize('mode', ['missing-evidence', 'unknown-evidence', 'wrong-question', 'invalid-state', 'timeout', 'exception'])
 def test_judge_invalid_output_is_never_counted_as_a_pass(mode, monkeypatch):
+    """Keep invalid identities, references, state combinations and timeouts out of scores."""
     class Broken(TestJudge):
         async def judge(self, **kwargs):
+            """Return controlled criterion results using the server-provided evidence catalog."""
             if mode == 'timeout':
                 await asyncio.sleep(1)
             if mode == 'exception':
                 raise ValueError('private-token')
-            output = await super().judge(answer='B: result')
-            output['policy']['evidence'] = [] if mode == 'missing-evidence' else ['no such source']
+            output = await super().judge(**kwargs)
+            if mode == 'missing-evidence':
+                output['policy']['evidence_refs'] = []
+            elif mode == 'unknown-evidence':
+                output['policy']['evidence_refs'][0]['evidence_id'] = 'nonexistent'
+            elif mode == 'wrong-question':
+                output['policy']['question_id'] = 'someone-else'
+            elif mode == 'invalid-state':
+                output['policy']['status'] = 'not_evaluable'  # verdict must be null
             return output
 
     monkeypatch.setattr(worker, 'JUDGE_TIMEOUT_SECONDS', 0.01)
     inputs = {'judge': Broken().descriptor(), 'criteria': CRITERIA,
-              'testSet': {'policies': [{'content': '출발 24시간 전까지'}]}}
-    result, error = asyncio.run(worker.judge_response(Broken(), inputs, {}, 'B: result', {'documents': []}))
-    assert all(r['status'] == 'NOT_EVALUABLE' for r in result.values())
+              'testSet': {'policies': [{'id': 'p-1', 'content': '출발 24시간 전까지'}]}}
+    result, error = asyncio.run(worker.judge_response(Broken(), inputs, {'id': 'q_001'}, 'B: result', {'documents': []}))
+    assert all(r['status'] == 'error' and r['verdict'] is None for r in result.values())
     assert error['code'] == ('JUDGE_TIMEOUT' if mode == 'timeout' else 'INVALID_JUDGE_OUTPUT')
     assert 'private-token' not in str(error)
 
 
 def test_pass_rate_excludes_unknowns_failures_and_unpaired_questions():
+    """Calculate independent and paired rates using their actual eligible populations."""
     def side(status):
+        """Build response states for checking denominator and pairing rules."""
         if status == 'NOT_RUN':
             return None
-        result = worker.failed_side('error', 'call failed')
+        result = worker.failed_side('error', 'call failed', 'q_001')
         if status != 'CALL_FAILED':
-            result.update(callStatus='SUCCEEDED', criteria={k: {'status': status} for k in CRITERIA['definitions']})
+            result.update(callStatus='SUCCEEDED', criteria={k: {'status': 'judged' if status in ('PASS', 'FAIL') else 'not_evaluable',
+                'verdict': status.lower() if status in ('PASS', 'FAIL') else None} for k in CRITERIA['definitions']})
         return result
 
     rows = [SimpleNamespace(a=side(a), b=side(b)) for a, b in [
@@ -290,19 +325,23 @@ def test_pass_rate_excludes_unknowns_failures_and_unpaired_questions():
     {'citations': [{'documentId': 'd', 'quote': 'A'}]},
 ])
 def test_retrieval_contract_rejects_invalid_sources(evidence):
+    """Reject ambiguous document identities and citations unsupported by source text."""
     with pytest.raises(ValueError):
         Evidence.model_validate(evidence)
 
 
 def test_shutdown_finishes_current_question_and_marks_remaining(db_and_client, monkeypatch):
+    """Finish both sides of the current question and explicitly fail unstarted work."""
     factory, client = db_and_client
     headers, service, body, _ = prepare(factory, client, monkeypatch, question_count=2)
     path = submit(client, headers, service, body)
     calls = []
 
     async def scenario():
+        """Drive the asynchronous worker with a controlled shutdown signal."""
         stop = asyncio.Event()
         async def sender(config, payload, outgoing):
+            """Simulate the company transport without opening a network connection."""
             calls.append(payload)
             stop.set()
             return '완료한 답변'
@@ -321,11 +360,13 @@ def test_shutdown_finishes_current_question_and_marks_remaining(db_and_client, m
 
 
 def test_question_failure_does_not_stop_later_questions(db_and_client, monkeypatch):
+    """Continue remaining calls and expose distinct pages after one transport timeout."""
     factory, client = db_and_client
     headers, service, body, _ = prepare(factory, client, monkeypatch, question_count=2)
     path = submit(client, headers, service, body)
     calls = []
     async def sender(config, payload, outgoing):
+        """Simulate the company transport without opening a network connection."""
         calls.append(payload)
         if len(calls) == 1:
             raise TimeoutError()
@@ -338,3 +379,64 @@ def test_question_failure_does_not_stop_later_questions(db_and_client, monkeypat
     assert page['nextCursor']
     next_page = client.get(path + '/items', headers=headers, params={'cursor': page['nextCursor'], 'limit': 1}).json()['data']
     assert next_page['nextCursor'] is None and next_page['items'][0]['id'] != page['items'][0]['id']
+
+
+def test_criterion_error_keeps_other_criteria_and_answer(ready):
+    """Count a model criterion error separately without losing successful answers or grades."""
+    factory, client, headers, service, body, _ = ready
+    class PartialJudge(TestJudge):
+        async def judge(self, **kwargs):
+            """Return controlled criterion results using the server-provided evidence catalog."""
+            result = await super().judge(**kwargs)
+            result['policy'] = {'question_id': kwargs['question']['id'], 'status': 'error',
+                'verdict': None, 'reason': '정책 판정 중 제공사 오류', 'evidence_refs': [],
+                'error': {'code': 'PROVIDER_ERROR', 'message': '판정 실패'}}
+            return result
+    judge = PartialJudge()
+    app.dependency_overrides[get_evaluation_judge] = lambda: judge
+    path = submit(client, headers, service, body)
+    asyncio.run(worker.process_one(factory, sender=plain_answer, judge=judge))
+    summary = client.get(path + '/summary', headers=headers).json()['data']
+    assert summary['evaluation']['status'] == 'COMPLETED'
+    assert summary['criteria']['policy']['a']['denominator'] == 0
+    assert summary['criteria']['policy']['a']['judgeFailed'] == 1
+    assert summary['criteria']['response']['a']['denominator'] == 1
+    item = client.get(path + '/items', headers=headers).json()['data']['items'][0]
+    result = client.get(path + '/items/' + item['id'], headers=headers).json()['data']['a']
+    assert result['callStatus'] == 'SUCCEEDED' and result['answer']
+    assert result['criteria']['policy']['error']['code'] == 'PROVIDER_ERROR'
+
+
+@pytest.mark.parametrize('change', [
+    {'status': 'judged', 'verdict': None},
+    {'status': 'not_evaluable', 'verdict': 'pass'},
+    {'status': 'error', 'verdict': None, 'error': None, 'evidence_refs': []},
+    {'error': {'code': 'BAD', 'message': 'failed'}},
+    {'evidence_refs': []},
+    {'evidence_refs': [{'evidence_id': 'ev_001', 'explanation': '   '}]},
+    {'evidence_refs': [{'evidence_id': 'ev_001', 'explanation': 'A'}, {'evidence_id': 'ev_001', 'explanation': 'B'}]},
+])
+def test_judge_result_rejects_contradictory_status_and_evidence(change):
+    """Enforce the user-defined verdict, status, error and reference invariants."""
+    from app.schemas.evaluation import CriterionResult
+    valid = {'question_id': 'q_001', 'status': 'judged', 'verdict': 'pass', 'reason': '정책에 기한이 있다.',
+             'evidence_refs': [{'evidence_id': 'ev_001', 'explanation': '3일 기한 확인'}], 'error': None}
+    assert CriterionResult.model_validate(valid).verdict == 'pass'
+    with pytest.raises(ValueError):
+        CriterionResult.model_validate({**valid, **change})
+
+
+def test_retrieval_pointer_configuration_is_validated_before_execution(ready):
+    """Reject citations without document configuration before a revision is saved."""
+    _, client, headers, service, _, _ = ready
+    response = client.put(service + '/connection', headers=headers,
+        json={**CONFIG, 'expectedRevision': 2, 'citationsPointer': '/citations'})
+    assert response.status_code == 400
+    assert client.get(service + '/connection', headers=headers).json()['data']['revision'] == 2
+    response = client.put(service + '/connection', headers=headers,
+        json={**CONFIG, 'expectedRevision': 2, 'retrievalPointer': '/retrieval/documents', 'citationsPointer': '/citations'})
+    assert response.status_code == 200
+    data = response.json()['data']
+    assert data['revision'] == 3 and data['verifiedRevision'] is None
+    assert data['retrievalPointer'] == '/retrieval/documents'
+    assert client.get(service + '/connection', headers=headers).json()['data']['citationsPointer'] == '/citations'
