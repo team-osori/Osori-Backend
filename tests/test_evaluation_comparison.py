@@ -84,6 +84,25 @@ def test_comparison_rejects_changed_snapshot_and_foreign_owner(single_ready):
     assert response.status_code == 409 and response.json()['error']['code'] == 'COMPARISON_INPUT_MISMATCH'
 
 
+def test_legacy_single_runs_without_conditions_return_conflict_instead_of_500(single_ready):
+    """Historical v1 single runs cannot participate in condition-level comparison."""
+    source, detail = run_condition(single_ready, ConditionJudge())
+    target = rerun(single_ready, source, ConditionJudge())
+    factory, client, headers, *_ = single_ready
+    with factory() as db:
+        for path in (source, target):
+            row = db.get(Evaluation, path.rsplit('/', 1)[1])
+            inputs = deepcopy(row.inputs)
+            inputs['criteria']['version'] = 1
+            for question in inputs['testSet']['questions']:
+                question.pop('expectedConditions', None)
+            row.inputs = inputs
+        db.commit()
+    response = client.get(target + '/comparison', headers=headers)
+    assert response.status_code == 409
+    assert response.json()['error']['code'] == 'UNSUPPORTED_EVALUATION_PROFILE'
+
+
 def test_unjudged_conditions_are_not_counted_as_improvement(single_ready):
     factory, client, headers, service, body, original = single_ready
     from test_evaluations import submit

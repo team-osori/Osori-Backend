@@ -50,6 +50,11 @@ A 담당의 확정 스냅샷은 다음 형식의 `expectedConditions`를 제공�
 requirement/criterion/sourceQuote 필드로 정규화하며 A의 원본 레코드는 수정하지 않는다.
 판정은 분류별 점수에 그치지 않고 각 조건 ID에 대해 수행한다.
 
+조건 criterion은 policy/questionResolution/communicationQuality/retrieval/grounding이다.
+기대 조건이 없는 과거 확정본은 A의 legacy_conditions로 기대 행동과 각 금지 행동에
+조건을 구성한다. 조건 ID는 질문 ID와 순번에 기반한 안정적인 UUID5이며 클라이언트는
+서버가 제공한 ID를 그대로 사용한다. A 원본 질문 레코드는 수정하지 않는다.
+
 판정 모델은 `ConditionJudgement` 형식으로 세 기준과 모든 조건의 `conditionResults`를 반환한다.
 각 조건 판정은 conditionId·question_id·status·verdict·reason·evidence_refs·error를 포함한다.
 유효한 판정에는 해당 정책과 답변의 서버 발급 근거 ID가 모두 필요하다.

@@ -30,27 +30,29 @@ JUDGE_TIMEOUT_SECONDS = 30
 def ungraded(reason, question_id, error=None, *, inputs=None, question=None):
     """Keep the model's criterion result contract even when no judgement is available."""
     if inputs and inputs['criteria']['version'] == 2:
-        output = condition_evaluation.unavailable(question, reason, error)
-        output.pop('conditionResults')
-        return output
+        return condition_evaluation.unavailable(question, reason, error)
     return {key: {'question_id': question_id, 'status': 'error' if error else 'not_evaluable',
         'verdict': None, 'reason': reason, 'evidence_refs': [], 'error': deepcopy(error)} for key in CRITERION_KEYS}
 
 
 def failed_side(code, message, question_id, *, inputs=None, question=None):
     """Keep execution failures out of pass-rate denominators."""
+    results = ungraded('호출 또는 실행 실패', question_id, inputs=inputs, question=question)
+    conditions = results.pop('conditionResults', [])
     return {'callStatus': 'FAILED', 'answer': None, 'evidence': Evidence().model_dump(), 'evidenceCatalog': [],
             'latencyMs': 0, 'attemptCount': 0, 'error': {'code': code, 'message': message},
-            'judgeError': None, 'criteria': ungraded('호출 또는 실행 실패', question_id, inputs=inputs, question=question)}
+            'judgeError': None, 'criteria': results, 'conditionResults': conditions}
 
 
 def pending_side(status, question_id, error=None, *, inputs=None, question=None):
     """Distinguish unstarted, active and uncertain calls from confirmed transport failures."""
     reason = {'NOT_RUN': '기업 챗봇 미호출', 'RUNNING': '기업 챗봇 호출·판정 처리 중',
               'INTERRUPTED': '호출 결과를 저장하기 전에 작업이 중단되어 결과를 확인할 수 없음'}[status]
+    results = ungraded(reason, question_id, inputs=inputs, question=question)
+    conditions = results.pop('conditionResults', [])
     return {'callStatus': status, 'answer': None, 'evidence': Evidence().model_dump(), 'evidenceCatalog': [],
             'latencyMs': 0 if status == 'NOT_RUN' else None, 'attemptCount': 0 if status == 'NOT_RUN' else None,
-            'error': deepcopy(error), 'judgeError': None, 'criteria': ungraded(reason, question_id, inputs=inputs, question=question)}
+            'error': deepcopy(error), 'judgeError': None, 'criteria': results, 'conditionResults': conditions}
 
 
 def close_interrupted(db, run, code='WORKER_INTERRUPTED'):
