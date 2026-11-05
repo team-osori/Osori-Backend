@@ -1,12 +1,9 @@
 """Run release preflight, DB backup, and migrations without emitting credentials."""
 import argparse
-import gzip
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
-import tempfile
 
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
@@ -28,28 +25,8 @@ def preflight():
 
 
 def backup(destination):
-    url = make_url(os.environ['DATABASE_URL'])
-    destination = Path(destination)
-    with tempfile.TemporaryDirectory(prefix='osori-mysql-') as temporary:
-        config = Path(temporary) / 'client.cnf'
-        # Bootstrap generates URL-safe credentials; reject option-file control characters.
-        values = [url.username, url.password, url.host]
-        if any(not value or any(c in value for c in '\r\n"\\') for value in values):
-            raise ValueError('Invalid backup credentials')
-        config.write_text('[client]\n' + '\n'.join([
-            f'user="{url.username}"', f'password="{url.password}"',
-            f'host="{url.host}"', f'port={url.port or 3306}']) + '\n')
-        config.chmod(0o600)
-        with tempfile.TemporaryFile() as errors:
-            with subprocess.Popen(['mysqldump', f'--defaults-extra-file={config}',
-                    '--single-transaction', '--no-tablespaces', '--set-gtid-purged=OFF',
-                    '--databases', url.database], stdout=subprocess.PIPE, stderr=errors) as dump:
-                with gzip.open(destination, 'wb') as compressed:
-                    shutil.copyfileobj(dump.stdout, compressed)
-                if dump.wait() != 0:
-                    destination.unlink(missing_ok=True)
-                    raise RuntimeError('Database backup failed; deployment stopped')
-        destination.chmod(0o600)
+    """Compatibility for old deployment tools; new tools call isolated backup.py directly."""
+    subprocess.run(['/usr/bin/python3', '-I', str(Path(__file__).with_name('backup.py')), str(destination)], check=True)
 
 
 def main():
@@ -63,7 +40,7 @@ def main():
         if args.action == 'backup':
             backup(args.destination)
         elif args.action == 'migrate':
-            subprocess.run([sys.executable, '-m', 'alembic', 'upgrade', 'head'], check=True)
+            subprocess.run([sys.executable, '-I', '-m', 'alembic', 'upgrade', 'head'], check=True)
     except Exception as exc:
         print(f'Deployment {args.action} failed ({type(exc).__name__}).', file=sys.stderr)
         return 1

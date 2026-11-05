@@ -4,6 +4,7 @@ import json
 from sqlalchemy import select
 
 from app.core.errors import ApiError
+from app.core.cursors import cursor_integer, decode_cursor
 from app.models.prompt import PromptVersion
 
 
@@ -11,10 +12,10 @@ def version_page(db, prompt_id, limit, cursor):
     statement = select(PromptVersion).where(PromptVersion.prompt_id == prompt_id)
     if cursor:
         try:
-            data = json.loads(base64.b64decode(cursor, altchars=b'-_', validate=True))
-            if (not isinstance(data, dict) or data.get('promptId') != prompt_id
-                    or type(data.get('before')) is not int or data['before'] < 1):
+            data = decode_cursor(cursor, {'promptId', 'before'})
+            if data['promptId'] != prompt_id:
                 raise ValueError()
+            cursor_integer(data['before'])
         except (ValueError, TypeError, UnicodeError):
             raise ApiError(400, 'INVALID_CURSOR', '유효하지 않은 커서입니다.') from None
         statement = statement.where(PromptVersion.version < data['before'])

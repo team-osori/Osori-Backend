@@ -17,6 +17,7 @@ install -d -m 0755 /usr/local/lib/osori
 install -m 0755 "$script_dir/deploy.sh" /usr/local/sbin/osori-deploy
 install -m 0755 "$script_dir/ssh_entrypoint.py" /usr/local/bin/osori-ci-entrypoint
 install -m 0644 "$script_dir/archive.py" /usr/local/lib/osori/archive.py
+/usr/local/sbin/osori-deploy --prepare-host
 
 if [[ ! -f /etc/osori-backend.env ]]; then
   # This host was inspected before bootstrap; fail closed if an unexpected DB already exists.
@@ -25,7 +26,7 @@ if [[ ! -f /etc/osori-backend.env ]]; then
     echo 'An Osori database already exists without an environment file; configure it manually.' >&2
     exit 1
   fi
-  python3 - <<'PY'
+  /usr/bin/python3 -I - <<'PY'
 import base64
 import os
 from pathlib import Path
