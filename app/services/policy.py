@@ -1,13 +1,14 @@
 import base64
 import json
+from copy import deepcopy
 from datetime import UTC
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import and_, or_, select, update
 
 from app.core.errors import ApiError
 from app.core.cursors import cursor_id, cursor_integer, cursor_time, decode_cursor
-from app.models.policy import Policy, PolicyVersion, TestQuestion, TestSet, TestSetVersion
+from app.models.policy import Policy, PolicyVersion, QuestionHistory, TestQuestion, TestSet, TestSetVersion
 from app.schemas.policy import QuestionBody
 from app.services.auth import now
 
@@ -77,7 +78,15 @@ def claim_draft(db, version, revision):
     db.refresh(version)
 
 
-def question_payload(db, project_id, version, body: QuestionBody):
+def legacy_conditions(payload, question_id):
+    """Derive stable IDs for old draft data without rewriting frozen historical snapshots."""
+    source = {key: payload[key] for key in ('policyVersionId', 'ruleKeys', 'evidenceQuote')}
+    behaviors = [('required', payload['expectedBehavior'])] + [('forbidden', text) for text in payload['forbiddenBehaviors']]
+    return [{'id': str(uuid5(NAMESPACE_URL, f'osori:{question_id}:{index}')), 'description': text,
+             'kind': kind, 'category': 'policy', **source} for index, (kind, text) in enumerate(behaviors)]
+
+
+def question_payload(db, project_id, version, body: QuestionBody, *, previous=None):
     """Require explicit source version, valid rules and a verbatim policy passage."""
     if body.policyVersionId not in version.policy_version_ids:
         raise ApiError(400, 'INVALID_POLICY_REFERENCE', '테스트셋에 포함된 정책 버전을 선택하세요.')
@@ -85,7 +94,41 @@ def question_payload(db, project_id, version, body: QuestionBody):
     keys = {rule['key'] for rule in policy.rules}
     if len(set(body.ruleKeys)) != len(body.ruleKeys) or not set(body.ruleKeys) <= keys or body.evidenceQuote not in policy.content:
         raise ApiError(400, 'INVALID_POLICY_EVIDENCE', '규칙 또는 근거 원문을 확인해 주세요.')
-    return body.model_dump(exclude={'expectedRevision'})
+    payload = body.model_dump(exclude={'expectedRevision', 'changeNote'})
+    if payload['expectedConditions'] is None:
+        # Compatibility for old clients. Preserve IDs only for unchanged conditions.
+        conditions = legacy_conditions(payload, uid())
+        prior = (previous or {}).get('expectedConditions') or []
+        for condition in conditions:
+            match = next((c for c in prior if all(c.get(k) == v for k, v in condition.items() if k != 'id')), None)
+            if match:
+                condition['id'] = match['id']
+    else:
+        conditions = payload['expectedConditions']
+        allowed_ids = {c['id'] for c in (previous or {}).get('expectedConditions', [])}
+        supplied = [c['id'] for c in conditions if c['id'] is not None]
+        if len(set(supplied)) != len(supplied) or not set(supplied) <= allowed_ids:
+            raise ApiError(400, 'INVALID_CONDITION_ID', '기존 조건 ID를 유지하거나 새 조건의 ID를 생략하세요.')
+        for condition in conditions:
+            condition['id'] = condition['id'] or uid()
+        required = [c['description'] for c in conditions if c['kind'] == 'required']
+        forbidden = [c['description'] for c in conditions if c['kind'] == 'forbidden']
+        if not required or len('\n'.join(required)) > 2000 or len(forbidden) > 20:
+            raise ApiError(400, 'INVALID_EXPECTED_CONDITIONS', '필수 조건과 기대 행동의 길이를 확인하세요.')
+        # Old B-side consumers still receive summaries consistent with the new conditions.
+        payload['expectedBehavior'] = '\n'.join(required)
+        payload['forbiddenBehaviors'] = forbidden
+    sources = {p.id: p for p in policy_versions(db, project_id, version.policy_version_ids, allow_deleted=True)}
+    for condition in conditions:
+        source = sources.get(condition['policyVersionId'])
+        if source is None:
+            raise ApiError(400, 'INVALID_POLICY_REFERENCE', '조건의 정책 버전을 확인하세요.')
+        rule_keys = condition['ruleKeys']
+        if (len(rule_keys) != len(set(rule_keys)) or not set(rule_keys) <= {r['key'] for r in source.rules}
+                or condition['evidenceQuote'] not in source.content):
+            raise ApiError(400, 'INVALID_POLICY_EVIDENCE', '조건의 규칙 또는 근거 원문을 확인하세요.')
+    payload['expectedConditions'] = conditions
+    return payload
 
 
 def policy_data(row):
@@ -108,8 +151,23 @@ def testset_data(row):
 
 def question_data(row):
     """Expose human review state along with original question and evidence fields."""
-    return {'id': row.id, **row.payload, 'reviewStatus': row.review_status,
-            'reviewedBy': row.reviewed_by, 'reviewNote': row.review_note}
+    return {'id': row.id, **row.payload,
+            'expectedConditions': row.payload.get('expectedConditions') or legacy_conditions(row.payload, row.id),
+            'reviewStatus': row.review_status, 'reviewedBy': row.reviewed_by,
+            'reviewNote': row.review_note, 'reviewedAt': iso(row.reviewed_at)}
+
+
+def record_history(db, version, row, actor_id, action, *, before=None, note=None):
+    """Write the full before/after state in the same transaction as the user action."""
+    db.add(QuestionHistory(id=uid(), testset_version_id=version.id, question_id=row.id,
+        version_revision=version.revision, action=action, actor_id=actor_id, note=note,
+        before=deepcopy(before), after=None if action == 'deleted' else deepcopy(question_data(row)), created_at=now()))
+
+
+def history_data(row):
+    return {'id': row.id, 'questionId': row.question_id, 'versionRevision': row.version_revision,
+            'action': row.action, 'actorId': row.actor_id, 'note': row.note,
+            'before': row.before, 'after': row.after, 'createdAt': iso(row.created_at)}
 
 
 def questions(db, version_id, *, lock=False):
@@ -125,9 +183,9 @@ def version_summary(row):
             'confirmedBy': row.confirmed_by, 'confirmedAt': iso(row.confirmed_at), 'createdAt': iso(row.created_at)}
 
 
-def paginate(db, statement, model, scope, limit, cursor, *, versioned=False):
+def paginate(db, statement, model, scope, limit, cursor, *, versioned=False, sequence=None):
     """Use scoped keyset pagination, with version ordering for immutable version histories."""
-    column = model.version if versioned else model.created_at
+    column = sequence if sequence is not None else (model.version if versioned else model.created_at)
     if cursor:
         try:
             data = decode_cursor(cursor, {'scope', 'v', 'id', 'value'})
@@ -142,7 +200,7 @@ def paginate(db, statement, model, scope, limit, cursor, *, versioned=False):
     next_cursor = None
     if len(rows) > limit:
         last = rows[limit - 1]
-        value = last.version if versioned else last.created_at.isoformat()
+        value = getattr(last, column.key) if versioned else last.created_at.isoformat()
         next_cursor = base64.urlsafe_b64encode(json.dumps({'scope': scope, 'v': 1, 'value': value, 'id': last.id}).encode()).decode()
     return rows[:limit], next_cursor
 
