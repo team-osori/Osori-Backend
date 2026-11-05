@@ -158,3 +158,31 @@ OSORI_TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/osori_test?ch
 ```
 
 테스트의 가짜 생성기는 테스트에서만 의존성 주입으로 사용합니다. 서비스 기본값에는 연결되지 않습니다. 만료된 생성 재사용 레코드는 기존 `python -m app.maintenance` 명령으로 정리하며 자동 예약은 구성하지 않습니다.
+
+## 정책 규칙 입력과 검증 (#21 요청안 3)
+
+현재 `POST /api/projects/{projectId}/policies`와 정책 버전 생성은 JSON의 `content`와 `rules`를 모두 요구합니다. 서버의 자동 규칙 추출, multipart 업로드, PDF/docx 텍스트 추출은 지원하지 않습니다. `rules`를 생략하면 400 `VALIDATION_ERROR`와 `fieldErrors[].code=REQUIRED`를 반환합니다. 정책 버전은 불변 원문이며 정책 자체에는 draft 상태가 없습니다. 질문은 별도의 draft 테스트셋에 생성하여 사람이 검토·확정합니다.
+
+- `content`: 공백뿐이 아닌 원문 1~100,000자. 원문의 공백·줄바꿈을 보존합니다.
+- `rules`: 1~100개. `key`는 영문·숫자·밑줄·하이픈 1~100자이며 정책 버전 안에서 대소문자를 구분하여 유일해야 합니다.
+- `description`: 공백뿐이 아닌 1~2,000자 설명.
+- `sourceQuote`: 공백뿐이 아닌 1~10,000자이며 `content`에 **그대로 포함된 연속 부분 문자열**이어야 합니다. 공백·줄바꿈·문장부호를 정규화하거나 문장을 요약해서 보내면 일치하지 않습니다. 원문 문장을 그대로 복사하세요.
+
+규칙 검증 실패는 다음처럼 문제 위치와 사유를 반환합니다. 원문 내용이나 제출 값은 오류에 포함하지 않습니다. 여러 오류가 있으면 먼저 발견된 규칙 오류부터 수정합니다.
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "입력값을 확인해 주세요.",
+    "requestId": "req_...",
+    "fieldErrors": [{
+      "field": "rules.1.key",
+      "code": "POLICY_RULE_KEY_DUPLICATE",
+      "message": "정책 버전 안에서 규칙 key는 중복될 수 없습니다."
+    }]
+  }
+}
+```
+
+원문 불일치는 `field=rules.N.sourceQuote`, `code=POLICY_RULE_SOURCE_MISMATCH`입니다. 실패한 정책 생성·버전 생성은 내용·revision을 변경하지 않습니다. OpenAPI에도 동일한 입력 제약을 기재합니다. 문단을 자동으로 규칙으로 나누는 클라이언트는 저장 전에 사람이 규칙의 의미와 원문 근거를 검토해야 합니다.

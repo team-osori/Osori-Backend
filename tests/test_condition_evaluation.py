@@ -126,14 +126,14 @@ def test_a_display_categories_preserve_diagnostic_conditions():
     assert [c['criterion'] for c in normalized] == ['policy', 'questionResolution', 'grounding', 'retrieval']
 
 
-def test_v2_compare_rejects_filter_for_legacy_only_criterion(single_ready):
-    """An unavailable legacy criterion must return 400 rather than a lookup failure."""
+def test_v2_compare_returns_empty_page_for_legacy_only_criterion(single_ready):
+    """An unavailable legacy criterion returns an empty page without a lookup failure."""
     factory, client, headers, service, body, original = single_ready
     path = submit(client, headers, service, {**original, 'mode': 'COMPARE'})
     for extra in ({}, {'change': 'NOT_COMPARABLE'}):
         response = client.get(path + '/items', headers=headers, params={'criterion': 'retrieval', **extra})
-        assert response.status_code == 400
-        assert response.json()['error']['code'] == 'INVALID_CRITERION'
+        assert response.status_code == 200
+        assert response.json()['data'] == {'items': [], 'nextCursor': None}
 
 
 @pytest.mark.parametrize('status', ['FAILED', 'NOT_RUN', 'RUNNING', 'INTERRUPTED'])

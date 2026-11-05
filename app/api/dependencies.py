@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import Depends, Path
+from fastapi import Depends, Header, Path
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -14,6 +14,9 @@ from app.services.auth import user_from_access
 bearer = HTTPBearer(auto_error=False)
 Db = Annotated[Session, Depends(get_db)]
 ResourceId = Annotated[str, Path(min_length=1, max_length=100, pattern=r'^[A-Za-z0-9_-]+$')]
+IfMatch = Annotated[str | None, Header(alias='If-Match', max_length=30,
+    description='따옴표로 감싼 최신 revision (예: "3"). 생략하면 428, 불일치하면 412입니다.',
+    json_schema_extra={'pattern': r'^"[1-9][0-9]*"$'})]
 
 
 def get_current_user(db: Db, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> User:

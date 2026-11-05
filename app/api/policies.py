@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Header, Query, Response
 from sqlalchemy import select, update
 
-from app.api.dependencies import Db, OwnedProject, ResourceId
+from app.api.dependencies import IfMatch, Db, OwnedProject, ResourceId
 from app.core.errors import ApiError
 from app.models.policy import Policy, PolicyVersion
 from app.schemas.policy import PolicyCreate, PolicyVersionCreate
@@ -88,7 +88,7 @@ def get_version(policyId: ResourceId, policyVersionId: ResourceId, project: Owne
 
 
 @router.delete('/{policyId}', status_code=204)
-def delete_policy(policyId: ResourceId, project: OwnedProject, db: Db, if_match: Annotated[str | None, Header()] = None):
+def delete_policy(policyId: ResourceId, project: OwnedProject, db: Db, if_match: IfMatch = None):
     """Logically delete a policy while preserving all evidence used by historical test sets."""
     row = service.policy_row(db, project.id, policyId)
     if if_match is None:

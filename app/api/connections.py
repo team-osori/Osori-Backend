@@ -8,7 +8,7 @@ from fastapi import APIRouter, Header, Response
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from app.api.dependencies import CurrentUser, Db, OwnedService, ResourceId
+from app.api.dependencies import IfMatch, CurrentUser, Db, OwnedService, ResourceId
 from app.api.projects import iso
 from app.core.errors import ApiError
 from app.core.concurrency import is_write_conflict
@@ -106,7 +106,7 @@ def put_secret(body: SecretPut, service: OwnedService, db: Db):
 
 @router.delete('/connection/secret', status_code=204)
 def delete_secret(service: OwnedService, db: Db,
-                  if_match: Annotated[str | None, Header(alias='If-Match', max_length=30)] = None):
+                  if_match: IfMatch = None):
     import re
     c = get_connection(db, service.id)
     if if_match is None:

@@ -1,6 +1,7 @@
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationInfo, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 Text = Annotated[str, StringConstraints(min_length=1, max_length=2000)]
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
@@ -21,23 +22,29 @@ class Input(BaseModel):
 
 
 class Rule(Input):
-    key: Id
+    key: Id = Field(description='정책 버전 안에서 중복 불가. 영문·숫자·밑줄·하이픈 1~100자')
     description: Text
-    sourceQuote: Annotated[str, StringConstraints(min_length=1, max_length=10000)]
+    sourceQuote: Annotated[str, StringConstraints(min_length=1, max_length=10000)] = Field(
+        description='content에 그대로 포함된 연속 원문. 공백·줄바꿈·문장부호까지 일치해야 합니다.')
 
 
 class PolicyBody(Input):
     content: Annotated[str, StringConstraints(min_length=1, max_length=100000)]
-    rules: Annotated[list[Rule], Field(min_length=1, max_length=100)]
+    rules: Annotated[list[Rule], Field(min_length=1, max_length=100,
+        description='클라이언트가 검토한 규칙 1~100개가 필수입니다. 자동 규칙 추출·파일 업로드는 지원하지 않습니다.')]
 
-    @model_validator(mode='after')
-    def evidence_matches(self):
+    @field_validator('rules')
+    @classmethod
+    def evidence_matches(cls, rules, info: ValidationInfo):
         """Require unique rule keys and verbatim supporting passages in the original text."""
-        if len({rule.key for rule in self.rules}) != len(self.rules):
-            raise ValueError('규칙 key는 중복될 수 없습니다.')
-        if any(rule.sourceQuote not in self.content for rule in self.rules):
-            raise ValueError('규칙의 근거는 정책 원문에 포함되어야 합니다.')
-        return self
+        seen = set()
+        for index, rule in enumerate(rules):
+            if rule.key in seen:
+                raise PydanticCustomError('policy_rule_key_duplicate', '규칙 key는 중복될 수 없습니다.', {'rule_index': index})
+            seen.add(rule.key)
+            if 'content' in info.data and rule.sourceQuote not in info.data['content']:
+                raise PydanticCustomError('policy_rule_source_mismatch', '규칙의 근거는 정책 원문에 포함되어야 합니다.', {'rule_index': index})
+        return rules
 
 
 class PolicyCreate(PolicyBody):

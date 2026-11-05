@@ -1,6 +1,6 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ProjectCreate(BaseModel):
@@ -25,3 +25,54 @@ class ProjectCreate(BaseModel):
 
 class ChatbotCreate(ProjectCreate):
     pass
+
+
+class ProjectPatch(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    expectedRevision: Annotated[int, Field(strict=True, ge=1, le=2**31 - 1)]
+    # Omission is allowed; explicitly submitted null is not a valid name.
+    name: Annotated[str, Field(min_length=1, max_length=50)] = Field(default=None, validate_default=False)
+    description: Annotated[str | None, Field(max_length=2000)] = None
+
+    @field_validator('name', 'description', mode='before')
+    @classmethod
+    def trim(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode='after')
+    def require_changes(self):
+        if not self.model_fields_set & {'name', 'description'}:
+            raise ValueError('변경할 이름 또는 설명을 지정하세요.')
+        if self.description is not None and not self.description:
+            raise ValueError('설명을 지우려면 null을 보내세요.')
+        return self
+
+
+class ChatbotPatch(ProjectPatch):
+    pass
+
+
+class ProgressTestSet(BaseModel):
+    versionId: str
+    label: str
+    status: Literal['draft', 'confirmed']
+    questionCount: int
+
+
+class ProgressEvaluation(BaseModel):
+    id: str
+    status: Literal['QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED']
+    completedQuestions: int
+    totalQuestions: int
+    reviewedQuestions: int = Field(description='모든 평가 대상의 모든 기대 조건에 최신 사람 pass/fail 판정이 있는 문항 수')
+
+
+class ProjectProgress(BaseModel):
+    stage: Literal[1, 2, 3] = 1
+    unlockedStage: Literal[1, 2, 3] = 1
+    status: Literal['SETUP', 'RUNNING', 'DONE'] = 'SETUP'
+    testSet: ProgressTestSet | None = None
+    evaluation: ProgressEvaluation | None = None
+    lastEvaluatedAt: str | None = None
+    promptVersion: int | None = Field(default=None,
+        description='최신 평가의 A측 명시적 프롬프트 버전. 기업 설정 프롬프트 사용 또는 평가 없음은 null')
