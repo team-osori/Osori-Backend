@@ -168,6 +168,8 @@ def review_question(testSetId: ResourceId, versionId: ResourceId, questionId: Re
     service.claim_draft(db, version, body.expectedRevision)
     row = question_row(db, version.id, questionId)
     before = service.question_data(row)
+    if body.status == 'approved':
+        service.require_reviewable(db, project.id, version, row)
     row.review_status, row.reviewed_by, row.review_note = body.status, user.id, body.note
     # Match MySQL DATETIME precision before freezing the audit JSON pre-commit.
     row.reviewed_at = now().replace(microsecond=0)
@@ -201,6 +203,8 @@ def confirm(testSetId: ResourceId, versionId: ResourceId, body: Revision, projec
     rows = service.questions(db, version.id, lock=True)
     if not rows or any(q.review_status != 'approved' or q.reviewed_by is None for q in rows):
         raise ApiError(409, 'REVIEW_REQUIRED', '모든 문항을 사람이 승인한 뒤 확정하세요.')
+    for row in rows:
+        service.require_reviewable(db, project.id, version, row)
     sources = service.policy_versions(db, project.id, version.policy_version_ids, allow_deleted=True)
     version.status, version.confirmed_by, version.confirmed_at = 'confirmed', user.id, now()
     version.snapshot = {'schemaVersion': 2, 'projectId': project.id, 'testSetId': testSetId,
@@ -211,7 +215,7 @@ def confirm(testSetId: ResourceId, versionId: ResourceId, body: Revision, projec
     return {'data': service.version_data(db, version)}
 
 
-@router.get('/{testSetId}/versions/{versionId}/evaluation-snapshot', response_model=Data[EvaluationSnapshot])
+@router.get('/{testSetId}/versions/{versionId}/evaluation-snapshot', response_model=Data[EvaluationSnapshot], response_model_exclude_unset=True)
 def evaluation_snapshot(testSetId: ResourceId, versionId: ResourceId, project: OwnedProject, db: Db):
     """Supply the evaluation team with an immutable, fully reviewed input snapshot."""
     version = resolve(db, project.id, testSetId, versionId)
