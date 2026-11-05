@@ -146,7 +146,7 @@ jobs:
         env:
           EXPECTED_REVISION: ${{ github.sha }}
         run: |
-          curl --fail --silent --show-error --retry 5 --retry-delay 3 \
+          curl --fail --silent --show-error --retry 5 --retry-delay 3 --retry-connrefused \
             --connect-timeout 5 --max-time 10 \
             "http://$DEPLOY_HOST:8000/api/ready" \
             | python -c 'import json,os,sys; data=json.load(sys.stdin); assert data == {"status":"ok","revision":os.environ["EXPECTED_REVISION"]}, "Unexpected deployed revision"'
