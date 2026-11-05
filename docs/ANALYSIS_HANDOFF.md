@@ -20,7 +20,7 @@
 단일 요약의 각 기준에서 `b`, `comparison`은 null이므로 미호출 B를 실패로 집계하지 않는다.
 기존 저장된 mode 없는 스냅샷은 A/B 평가로 해석한다.
 
-아직 제공사를 정하지 않은 판정 AI는 `JUDGE_NOT_CONFIGURED`로 표시한다.
+판정 AI가 비활성화되어 있거나 키가 없으면 `JUDGE_NOT_CONFIGURED`로 표시한다.
 답변 수집 완료와 판정 가능 여부는 별도로 표현하며 임의 점수를 생성하지 않는다.
 
 ## 기대 조건별 판정 및 채점 프로파일
@@ -61,8 +61,8 @@ requirement/criterion/sourceQuote 필드로 정규화하며 A의 원본 레코�
 조건 누락·중복·타 문항/조건/근거 참조, 점수와 verdict 모순, 정책 조건과 정책 요약 모순은
 `INVALID_JUDGE_OUTPUT`이며 판정 실패로 기록한다. 검색 자료가 없다는 이유로 정책 자체 판정을 지우지 않는다.
 
-모델 제공사와 실제 API 형식은 미정이다. get_evaluation_judge의 어댑터 연결부를 사용하며
-현재 기본 어댑터는 모든 기준과 조건을 미판정으로 반환한다. 테스트 어댑터는 테스트에서만 사용한다.
+실제 OpenAI Responses 판정 어댑터를 제공한다. 명시적으로 활성화하지 않으면
+기본 어댑터가 모든 기준과 조건을 미판정으로 반환한다. 테스트는 외부 호출을 비활성화한다.
 
 ## 오류 상세와 결과 탐색
 
@@ -139,6 +139,7 @@ counts의 단위는 문항이 아닌 조건이다. 미판정·호출 실패는 N
 조건별로 최신 담당자 판정을 우선하며, 각 문항의 비교에 사용한 reviewRevision을 응답한다.
 전체 counts와 페이징된 items/nextCursor를 반환한다. limit/cursor는 기존 목록 규칙을 따른다.
 검토 이력이 달라지면 이전 비교 커서는 무효화되므로 처음부터 새로 조회한다.
+
 ## A 담당 구현과의 확정 연결 (PR #14 반영)
 
 A의 실제 조건 형식은 id, description, kind(required/forbidden), category,
@@ -150,3 +151,28 @@ response 분류는 질문 해결도에 대응하며 retrieval/grounding은 별�
 A의 schemaVersion=2 확정본을 직접 수용한다. schemaVersion=1 과거 확정본은
 A의 legacy_conditions 규칙으로 기대 행동 및 모든 금지 행동에 안정적인 조건 ID를 구성한다.
 이미 저장한 B 스냅샷의 기존 조건 ID도 그대로 읽는다. 원본 확정본과 과거 평가 결과는 수정하지 않는다.
+
+## 실제 판정 AI 설정
+
+```dotenv
+EVALUATION_JUDGE_PROVIDER=openai
+EVALUATION_JUDGE_MODEL=gpt-4.1-mini-2025-04-14
+EVALUATION_JUDGE_API_KEY=
+```
+
+키 우선순위는 EVALUATION_JUDGE_API_KEY → QUESTION_GENERATION_API_KEY → OPENAI_API_KEY다.
+모델은 EVALUATION_JUDGE_MODEL → QUESTION_GENERATION_MODEL → 질문 생성 기본 모델 순이다.
+A의 키를 재사용할 수 있지만 EVALUATION_JUDGE_PROVIDER=openai를 명시해야 유료 판정을 활성화한다.
+API 프로세스와 평가 워커에 동일한 환경 변수를 적용하고 재시작한다.
+제공사·모델·판정 지시문 해시·출력 제한을 실행 스냅샷에 기록한다.
+설정 변경 전 접수한 작업은 다른 판정 설정으로 실행하지 않고 EXECUTION_CONFIG_UNAVAILABLE로 종료한다.
+
+원문·답변·검색 근거는 OpenAI에 전송되며 store=false, 고정 HTTPS 엔드포인트,
+리다이렉트 및 환경 프록시 비사용, 자동 재시도 없음으로 구성한다.
+입력은 최대 512KiB, 응답은 최대 2MiB, 요청은 25초(워커 외부 제한 30초)다.
+상위 API의 원문 오류나 키가 결과·로그로 노출되지 않도록 처리한다.
+인증 실패·한도 초과·시간 초과·거절·불완전 출력은 각각 JUDGE_AUTH_FAILED,
+JUDGE_RATE_LIMITED, JUDGE_TIMEOUT, JUDGE_REFUSED, JUDGE_INCOMPLETE로 구분한다.
+모델 출력 구조·점수·조건·근거와 실제 인용문을 서버에서 다시 검증한다.
+
+공식 규격: https://developers.openai.com/api/docs/guides/structured-outputs

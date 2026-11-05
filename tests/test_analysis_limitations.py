@@ -46,3 +46,23 @@ def test_uncollected_hypothesis_evidence_is_rejected(single_ready):
     path, detail = run_condition(single_ready, InvalidCauseJudge())
     assert detail['a']['judgeError']['code'] == 'INVALID_JUDGE_OUTPUT'
     assert detail['analysis']['a']['hypotheses'] == []
+
+
+def test_a_retrieval_category_without_execution_telemetry_is_unevaluable(single_ready):
+    from app.models.policy import TestSetVersion
+    factory, client, headers, service, body, original = single_ready
+    with factory() as db:
+        version = db.get(TestSetVersion, body['testSetVersionId'])
+        snapshot = deepcopy(version.snapshot)
+        condition = deepcopy(snapshot['questions'][0]['expectedConditions'][0])
+        condition.update(id='retrieval-source', category='retrieval', description='필요한 정책을 검색한다.')
+        snapshot['questions'][0]['expectedConditions'].append(condition)
+        version.snapshot = snapshot
+        db.commit()
+    from test_condition_evaluation import ConditionJudge
+    path, detail = run_condition(single_ready, ConditionJudge())
+    retrieval = next(result for result in detail['a']['conditionResults'] if result['conditionId'] == 'retrieval-source')
+    assert retrieval['status'] == 'not_evaluable' and retrieval['verdict'] is None
+    assert detail['resultStatus'] == 'REVIEW_REQUIRED'
+    assert detail['a']['criteria']['policy']['verdict'] == 'pass'
+    assert detail['analysis']['a']['confirmedCause'] is None

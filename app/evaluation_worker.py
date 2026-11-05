@@ -21,6 +21,7 @@ from app.services.evaluation_judge import get_evaluation_judge
 from app.services.evaluations import CRITERION_KEYS, side_names
 from app.services.policy import uid
 from app.services import condition_evaluation
+from app.services.openai_evaluation_judge import JudgeError
 
 LEASE_SECONDS = 600
 JUDGE_TIMEOUT_SECONDS = 30
@@ -138,6 +139,9 @@ async def judge_response(judge, inputs, question, answer, evidence):
     except TimeoutError:
         error = {'code': 'JUDGE_TIMEOUT', 'message': '평가 모델 응답 시간이 초과되었습니다.'}
         output = ungraded('평가 모델 응답 시간 초과', question['id'], error, inputs=inputs, question=question)
+    except JudgeError as exc:
+        error = {'code': exc.code, 'message': exc.message}
+        output = ungraded(exc.message, question['id'], error, inputs=inputs, question=question)
     except Exception:
         error = {'code': 'INVALID_JUDGE_OUTPUT', 'message': '유효한 평가 판정을 받지 못했습니다.'}
         output = ungraded('평가 모델 오류 또는 잘못된 판정 근거', question['id'], error, inputs=inputs, question=question)

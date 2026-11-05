@@ -1,6 +1,8 @@
 from typing import Protocol
+import os
 
 from app.schemas.evaluation import Judgement
+from app.schemas.condition_evaluation import ConditionJudgement
 
 CRITERIA = {
     'version': 1,
@@ -14,12 +16,12 @@ CRITERIA = {
 
 
 class EvaluationJudge(Protocol):
-    """Provider boundary: implementations must enforce timeout and return all four criteria."""
+    """Provider boundary: enforce timeouts and the submitted profile's output contract."""
     def descriptor(self) -> dict:
         """Return non-secret adapter/model identity persisted at submission."""
         ...
 
-    async def judge(self, *, question: dict, answer: str, evidence: dict, policies: list, criteria: dict, evidence_catalog: list) -> Judgement:
+    async def judge(self, *, question: dict, answer: str, evidence: dict, policies: list, criteria: dict, evidence_catalog: list) -> Judgement | ConditionJudgement | dict:
         """Judge one response using frozen inputs; never include credentials in output or logs."""
         ...
 
@@ -41,5 +43,15 @@ class UnconfiguredJudge:
 
 
 def get_evaluation_judge() -> EvaluationJudge:
-    """Connect a selected provider here; environment placeholders alone do not enable it."""
+    """Require explicit opt-in; allow the team's question-generation key to be reused."""
+    if os.getenv('EVALUATION_JUDGE_PROVIDER', '').strip().lower() == 'openai':
+        key = (os.getenv('EVALUATION_JUDGE_API_KEY', '').strip()
+               or os.getenv('QUESTION_GENERATION_API_KEY', '').strip()
+               or os.getenv('OPENAI_API_KEY', '').strip())
+        if key:
+            from app.services.openai_evaluation_judge import OpenAIEvaluationJudge
+            from app.services.question_generation import DEFAULT_MODEL
+            model = (os.getenv('EVALUATION_JUDGE_MODEL', '').strip()
+                     or os.getenv('QUESTION_GENERATION_MODEL', '').strip() or DEFAULT_MODEL)
+            return OpenAIEvaluationJudge(key, model)
     return UnconfiguredJudge()

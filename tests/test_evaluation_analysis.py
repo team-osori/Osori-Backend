@@ -59,6 +59,20 @@ def test_mixed_failure_and_unavailable_results_preserve_both_signals():
     assert result['status'] == 'UNMET' and result['hasJudgmentError'] and result['needsReview']
 
 
+def test_legacy_profile_can_display_and_review_a_source_conditions():
+    question = {'id': 'q', 'expectedConditions': [{'id': 'c', 'description': '무조건 환불 금지',
+        'kind': 'forbidden', 'category': 'policy', 'policyVersionId': 'p',
+        'evidenceQuote': '취소 기한', 'ruleKeys': ['r']}]}
+    original = deepcopy(question)
+    side = {'callStatus': 'SUCCEEDED', 'criteria': {'policy': {'status': 'judged', 'verdict': 'pass'}}}
+    result = describe_side(question, side, [{'conditionId': 'c', 'verdict': 'fail', 'reason': '금지 행동 확인'}])
+    assert result['status'] == 'UNMET'
+    assert result['issues'][0]['kind'] == 'other'
+    assert result['conditions'][0]['kind'] == 'forbidden'
+    assert result['conditions'][0]['policyEvidence']['quote'] == '취소 기한'
+    assert question == original and 'conditionResults' not in side
+
+
 def test_failed_condition_is_visible_even_when_all_category_summaries_pass():
     """Individual expectations remain authoritative for the overall item status."""
     side = {'callStatus': 'SUCCEEDED', 'criteria': {'policy': {'status': 'judged', 'verdict': 'pass'}},
