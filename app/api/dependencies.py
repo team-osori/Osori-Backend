@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.errors import ApiError
 from app.models.auth import User
-from app.models.project import Project
+from app.models.project import Chatbot, Project
 from app.services.auth import user_from_access
 
 bearer = HTTPBearer(auto_error=False)
@@ -36,3 +36,13 @@ def require_project_owner(projectId: ResourceId, user: CurrentUser, db: Db) -> P
 
 
 OwnedProject = Annotated[Project, Depends(require_project_owner)]
+
+
+def require_service_owner(serviceId: ResourceId, project: OwnedProject, db: Db) -> Chatbot:
+    service = db.scalar(select(Chatbot).where(Chatbot.id == serviceId, Chatbot.project_id == project.id))
+    if service is None:
+        raise ApiError(404, 'RESOURCE_NOT_FOUND', '챗봇을 찾을 수 없습니다.')
+    return service
+
+
+OwnedService = Annotated[Chatbot, Depends(require_service_owner)]

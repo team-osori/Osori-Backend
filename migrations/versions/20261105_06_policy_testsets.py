@@ -3,8 +3,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
 
-revision = '20261105_05'
-down_revision = '20261105_04'
+revision = '20261105_06'
+down_revision = '20261105_05'
 branch_labels = None
 depends_on = None
 

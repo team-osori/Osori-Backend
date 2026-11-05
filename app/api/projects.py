@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from app.api.dependencies import CurrentUser, Db, OwnedProject, ResourceId
 from app.core.errors import ApiError
 from app.models.project import Chatbot, Project
+from app.models.connection import Connection
 from app.schemas.project import ChatbotCreate, ProjectCreate
 from app.services.auth import now
 
@@ -31,11 +32,11 @@ def project_data(project: Project, service_count: int) -> dict:
             'createdAt': iso(project.created_at), 'updatedAt': iso(project.updated_at)}
 
 
-def chatbot_data(service: Chatbot) -> dict:
-    """Serialize chatbot registration; connection setup belongs to its separate feature."""
+def chatbot_data(service: Chatbot, has_connection: bool = False) -> dict:
+    """Serialize chatbot registration and its current connection presence."""
     return {'id': service.id, 'projectId': service.project_id, 'name': service.name,
             'description': service.description, 'revision': service.revision,
-            'hasConnection': False, 'createdAt': iso(service.created_at), 'updatedAt': iso(service.updated_at)}
+            'hasConnection': has_connection, 'createdAt': iso(service.created_at), 'updatedAt': iso(service.updated_at)}
 
 
 @router.post('', status_code=201, response_model=Data[ProjectResponse])
@@ -112,7 +113,8 @@ def create_chatbot(body: ChatbotCreate, project: OwnedProject, db: Db, response:
 def list_chatbots(project: OwnedProject, db: Db):
     """Return the zero-or-one chatbot belonging to an authorized project."""
     service = db.scalar(select(Chatbot).where(Chatbot.project_id == project.id))
-    return {'data': {'items': [chatbot_data(service)] if service else [], 'nextCursor': None}}
+    has_connection = bool(service and db.scalar(select(exists().where(Connection.service_id == service.id))))
+    return {'data': {'items': [chatbot_data(service, has_connection)] if service else [], 'nextCursor': None}}
 
 
 @router.get('/{projectId}/services/{serviceId}', tags=['services'], response_model=Data[ChatbotResponse])
@@ -121,4 +123,5 @@ def get_chatbot(serviceId: ResourceId, project: OwnedProject, db: Db):
     service = db.scalar(select(Chatbot).where(Chatbot.id == serviceId, Chatbot.project_id == project.id))
     if service is None:
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '챗봇을 찾을 수 없습니다.')
-    return {'data': chatbot_data(service)}
+    has_connection = bool(db.scalar(select(exists().where(Connection.service_id == service.id))))
+    return {'data': chatbot_data(service, has_connection)}

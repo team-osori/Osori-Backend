@@ -5,6 +5,8 @@ from fastapi.exceptions import RequestValidationError
 
 from app.api.auth import router
 from app.api.projects import router as project_router
+from app.api.connections import router as connection_router
+from app.api.prompts import router as prompt_router
 from app.api.policies import router as policy_router
 from app.api.testsets import router as testset_router
 from app.core.errors import ApiError
@@ -17,9 +19,11 @@ from app.core.request_limits import AuthRequestLimits
 app = FastAPI(title='Osori API', version='0.1.0')
 app.add_middleware(AuthRequestLimits)
 app.add_middleware(RequestIdMiddleware)
-app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'], allow_headers=['Authorization', 'Content-Type', 'If-Match', 'Idempotency-Key'], expose_headers=['X-Request-Id', 'Location', 'Retry-After'])
+app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], allow_headers=['Authorization', 'Content-Type', 'If-Match', 'Idempotency-Key'], expose_headers=['X-Request-Id', 'Location', 'Retry-After'])
 app.include_router(router)
 app.include_router(project_router)
+app.include_router(connection_router)
+app.include_router(prompt_router)
 app.include_router(policy_router)
 app.include_router(testset_router)
 
