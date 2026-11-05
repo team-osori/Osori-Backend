@@ -11,6 +11,7 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     login_id: Mapped[str] = mapped_column(String(30).with_variant(String(30, collation='utf8mb4_bin'), 'mysql'), unique=True, index=True)
+    email: Mapped[str | None] = mapped_column(String(254).with_variant(String(254, collation='utf8mb4_bin'), 'mysql'), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(30))
     password_hash: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

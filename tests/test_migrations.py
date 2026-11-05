@@ -67,3 +67,22 @@ def test_policy_upgrade_preserves_existing_prompt_data(tmp_path):
         assert conn.execute(select(PromptVersion.content).where(PromptVersion.id == 'pv')).scalar_one() == '기존 프롬프트 원문'
     assert 'policies' in inspect(engine).get_table_names()
     engine.dispose()
+
+
+def test_email_migration_preserves_legacy_identity_and_refuses_lossy_downgrade(tmp_path):
+    from sqlalchemy import text
+    root = Path(__file__).resolve().parents[1]
+    env = {**os.environ, 'DATABASE_URL': f'sqlite:///{tmp_path / "legacy-email.db"}'}
+    subprocess.run([sys.executable, '-m', 'alembic', 'upgrade', '20261105_09'], cwd=root, env=env, check=True)
+    engine = create_engine(env['DATABASE_URL'])
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO users (id,login_id,name,password_hash,created_at) VALUES ('u','legacy','test','hash','2026-01-01')"))
+        conn.execute(text("INSERT INTO projects (id,owner_id,name,revision,created_at,updated_at) VALUES ('p','u','project',1,'2026-01-01','2026-01-01')"))
+    subprocess.run([sys.executable, '-m', 'alembic', 'upgrade', 'head'], cwd=root, env=env, check=True)
+    with engine.begin() as conn:
+        assert conn.execute(text("SELECT login_id,email FROM users WHERE id='u'")).one() == ('legacy', None)
+        assert conn.execute(text("SELECT owner_id FROM projects WHERE id='p'")).scalar_one() == 'u'
+        conn.execute(text("UPDATE users SET email='legacy@example.com' WHERE id='u'"))
+    result = subprocess.run([sys.executable, '-m', 'alembic', 'downgrade', '20261105_10'], cwd=root, env=env, capture_output=True)
+    assert result.returncode != 0 and b'Cannot discard stored email identities' in result.stderr
+    engine.dispose()

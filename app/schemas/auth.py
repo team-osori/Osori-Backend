@@ -1,15 +1,30 @@
 from typing import Annotated
+import re
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
 
-LoginId = Annotated[str, Field(min_length=4, max_length=30, pattern=r'^[A-Za-z][A-Za-z0-9_]*$'), AfterValidator(str.lower)]
+def normalize_email(value: str) -> str:
+    """Use one explicit, case-insensitive ASCII email identity without DNS lookups."""
+    value = value.strip().lower()
+    if len(value) > 254 or not value.isascii() or value.count('@') != 1:
+        raise ValueError('유효한 이메일 주소를 입력해 주세요.')
+    local, domain = value.split('@')
+    labels = domain.split('.')
+    if (not local or len(local) > 64 or not re.fullmatch(r"[a-z0-9!#$%&'*+/=?^_`{|}~.-]+", local)
+        or local.startswith('.') or local.endswith('.') or '..' in local or len(labels) < 2
+        or any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in labels)):
+        raise ValueError('유효한 이메일 주소를 입력해 주세요.')
+    return value
+
+
+Email = Annotated[str, Field(min_length=3, max_length=254), AfterValidator(normalize_email)]
 Password = Annotated[str, Field(min_length=12, max_length=128)]
 Token = Annotated[str, Field(min_length=1, max_length=4096)]
 
 
 class SignupRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    loginId: LoginId
+    email: Email
     name: Annotated[str, Field(min_length=1, max_length=30)]
     password: Password
 
@@ -30,7 +45,7 @@ class SignupRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    loginId: LoginId
+    email: Email
     password: Password
 
     @field_validator('password')

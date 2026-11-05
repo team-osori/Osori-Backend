@@ -13,7 +13,7 @@ def encode(payload):
 def cursor_endpoints(db_and_client):
     """Create both kinds of paginated resources under an authenticated project."""
     _, client = db_and_client
-    credentials = {'loginId': 'cursor_owner', 'password': 'secure-password-123'}
+    credentials = {'email': 'cursor_owner@example.com', 'password': 'secure-password-123'}
     client.post('/api/auth/signup', json={**credentials, 'name': 'Test'})
     token = client.post('/api/auth/login', json=credentials).json()['data']['accessToken']
     headers = {'Authorization': 'Bearer ' + token}

@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 
 def register(client, login):
     """Create a distinct test user and obtain credentials for protected API checks."""
-    credentials = {'loginId': login, 'password': 'secure-password-123'}
+    credentials = {'email': f'{login}@example.com', 'password': 'secure-password-123'}
     assert client.post('/api/auth/signup', json={**credentials, 'name': 'Test'}).status_code == 201
     data = client.post('/api/auth/login', json=credentials).json()['data']
     return {'Authorization': 'Bearer ' + data['accessToken']}

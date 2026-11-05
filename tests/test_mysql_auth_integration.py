@@ -48,8 +48,8 @@ def signup_and_login(client):
     """Create a distinct test user and obtain credentials for protected API checks."""
     login_id = 'u' + uuid4().hex[:20]
     password = 'integration-password-123'
-    assert client.post('/api/auth/signup', json={'loginId': login_id, 'name': 'test', 'password': password}).status_code == 201
-    response = client.post('/api/auth/login', json={'loginId': login_id, 'password': password})
+    assert client.post('/api/auth/signup', json={'email': login_id + '@example.com', 'name': 'test', 'password': password}).status_code == 201
+    response = client.post('/api/auth/login', json={'email': login_id + '@example.com', 'password': password})
     assert response.status_code == 200
     return response.json()['data']
 

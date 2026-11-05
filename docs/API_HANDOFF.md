@@ -19,9 +19,9 @@ MySQL 데이터베이스는 미리 생성해야 합니다. 비밀번호의 특�
 
 | Method | 경로 | 입력과 동작 |
 | --- | --- | --- |
-| POST | `/api/auth/signup` | `loginId`, `name`, `password`로 가입. 201 |
-| GET | `/api/auth/login-id-availability?loginId=...` | 아이디 사용 가능 여부 |
-| POST | `/api/auth/login` | `loginId`, `password`. `user`, `accessToken`, `refreshToken` 반환 |
+| POST | `/api/auth/signup` | `email`, `name`, `password`로 가입. 201 |
+| GET | `/api/auth/email-availability?email=...` | 이메일 사용 가능 여부 |
+| POST | `/api/auth/login` | `email`, `password`. `user`, `accessToken`, `refreshToken` 반환 |
 | GET | `/api/auth/me` | Bearer 액세스 토큰으로 내 정보 조회 |
 | POST | `/api/auth/refresh` | `refreshToken`으로 새 토큰 쌍 발급 |
 | POST | `/api/auth/logout` | `refreshToken`의 로그인 세션 폐기. 204, 본문 없음 |
@@ -56,7 +56,7 @@ MySQL 데이터베이스는 미리 생성해야 합니다. 비밀번호의 특�
 }
 ```
 
-아이디는 영문 시작, 영문·숫자·밑줄 4~30자이며 소문자로 통일합니다. 이름은 앞뒤 공백을 제거하고 회원 이름은 1~30자, 프로젝트·챗봇 이름은 1~50자입니다. 비밀번호는 12~128자이며 공백만 불가, 원문을 유지합니다. 비밀번호 확인은 프론트에서 처리합니다. 설명은 생략 또는 null 가능하고 입력 시 앞뒤 공백 제거 후 1~2,000자입니다. 설명 2,000자 제한은 DB 저장 안전성을 위한 현재 구현 기준입니다. 알려지지 않은 Body 필드는 거부합니다.
+이메일은 앞뒤 공백을 제거하고 소문자로 통일합니다. ASCII 이메일만 허용하며 로컬 부분은 최대 64자, 전체는 최대 254자입니다. 국제화 이메일과 DNS 검증은 지원하지 않습니다. 이름은 앞뒤 공백을 제거하고 회원 이름은 1~30자, 프로젝트·챗봇 이름은 1~50자입니다. 비밀번호는 12~128자이며 공백만 불가, 원문을 유지합니다. 비밀번호 확인은 프론트에서 처리합니다. 설명은 생략 또는 null 가능하고 입력 시 앞뒤 공백 제거 후 1~2,000자입니다. 설명 2,000자 제한은 DB 저장 안전성을 위한 현재 구현 기준입니다. 알려지지 않은 Body 필드는 거부합니다.
 
 JSON 쓰기 요청은 `Content-Type: application/json`, 최대 1MiB입니다. 모든 HTTP 응답에는 `X-Request-Id`가 있고 오류 Body의 `requestId`와 같습니다.
 
@@ -78,7 +78,7 @@ JSON 쓰기 요청은 `Content-Type: application/json`, 최대 1MiB입니다. �
 | 400 | `VALIDATION_ERROR`, `INVALID_CURSOR` |
 | 401 | `UNAUTHORIZED`, `INVALID_CREDENTIALS`, `INVALID_REFRESH_TOKEN` |
 | 404 | `RESOURCE_NOT_FOUND` — 타인 소유·미존재·프로젝트와 챗봇 소속 불일치 동일 처리 |
-| 409 | `LOGIN_ID_ALREADY_EXISTS`, `SERVICE_ALREADY_EXISTS` |
+| 409 | `EMAIL_ALREADY_EXISTS`, `SERVICE_ALREADY_EXISTS` |
 | 413 / 415 | `PAYLOAD_TOO_LARGE` / `UNSUPPORTED_MEDIA_TYPE` |
 | 429 | `RATE_LIMITED`와 `Retry-After` 초 |
 | 500 / 503 | `INTERNAL_ERROR` / `SERVICE_UNAVAILABLE` |
@@ -162,12 +162,16 @@ OSORI_TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/osori_test?ch
 
 기존 프로젝트 소유자는 항상 admin이며 제거하거나 강등할 수 없습니다. admin은 프로젝트 이름/설명·서비스 이름/설명·프로젝트 삭제·멤버 초대/역할/제거를 관리합니다. 수락한 member는 프로젝트 목록·조회와 정책/시험지/프롬프트/연동/평가 작업에 참여합니다. 미수락 초대는 접근 권한을 주지 않습니다. 리소스 권한 없음은 404, 멤버가 관리자 작업을 요청하면 `403 ADMIN_REQUIRED`입니다.
 
-- `GET /api/projects/{projectId}/members`: 소유자·수락 멤버·대기 초대 목록. `userId/loginId/name/role/status/revision/email/lastSeenAt`.
-- `POST /api/projects/{projectId}/invitations`: admin이 `{"loginId":"가입된아이디","role":"member"}`로 초대합니다. role은 admin/member. 이메일 발송은 하지 않으며 기존 계정만 지원합니다. 프로젝트당 소유자 포함 200명 제한입니다.
+- `GET /api/projects/{projectId}/members`: 소유자·수락 멤버·대기 초대 목록. `userId/name/role/status/revision/email/lastSeenAt`.
+- `POST /api/projects/{projectId}/invitations`: admin이 `{"email":"가입된이메일","role":"member"}`로 초대합니다. role은 admin/member. 이메일 발송은 하지 않으며 기존 계정만 지원합니다. 프로젝트당 소유자 포함 200명 제한입니다.
 - `GET /api/invitations`: 로그인 사용자의 미수락 초대 목록.
 - `POST /api/invitations/{invitationId}/accept`: 초대받은 사용자가 `expectedRevision`으로 수락.
 - `PATCH /api/projects/{projectId}/members/{userId}`: admin이 `expectedRevision`, `role`로 변경.
 - `DELETE /api/projects/{projectId}/members/{userId}`: admin이 If-Match로 제거하거나 미수락 초대를 취소. 삭제 후 다음 요청부터 접근 차단.
-- `GET /api/auth/me`: `projectRoles`로 프로젝트별 실제 역할을 반환합니다. 전역 역할이나 수집하지 않은 이메일은 만들어내지 않습니다(`email: null`). `lastSeenAt`은 로그인 또는 인증된 접근 기준이며 과도한 DB 쓰기를 피하도록 최대 5분 간격으로 갱신합니다.
+- `GET /api/auth/me`: `projectRoles`로 프로젝트별 실제 역할을 반환합니다. 전역 역할이나 이메일을 반환하며 미연결 기존 계정은 `email: null`입니다. `lastSeenAt`은 로그인 또는 인증된 접근 기준이며 과도한 DB 쓰기를 피하도록 최대 5분 간격으로 갱신합니다.
 
 마이그레이션 `20261105_10`이 기존 데이터에 nullable 접근/삭제 시각과 리소스 deleted=false 기본값을 추가합니다. 기존 소유자 권한과 데이터는 유지합니다.
+
+## 이메일 전환
+
+신규 가입과 로그인은 이메일만 사용합니다. 기존 login_id와 프로젝트는 보존하고 기존 계정의 이메일은 null로 둡니다. 기존 사용자는 이메일 연결 전 새 로그인 API를 사용할 수 없습니다. 연결 절차는 아직 결정되지 않았습니다. 이메일이 저장된 DB는 이메일을 이전하기 전 마이그레이션을 내릴 수 없습니다.
