@@ -287,7 +287,9 @@ def generate(testSetId: ResourceId, versionId: ResourceId, body: Generate, proje
     # Serialize generation calls for this version before checking replay or revision.
     db.execute(select(TestSetVersion.id).where(TestSetVersion.id == version.id).with_for_update())
     key = hashlib.sha256(f'{user.id}|{version.id}|{idempotency_key}'.encode()).hexdigest()
-    fingerprint = hashlib.sha256(json.dumps(body.model_dump(), sort_keys=True).encode()).hexdigest()
+    # Preserve fingerprints of in-flight 24-hour replays created before categoryCounts existed.
+    fingerprint_body = body.model_dump(exclude={'categoryCounts'} if body.categoryCounts is None else set())
+    fingerprint = hashlib.sha256(json.dumps(fingerprint_body, sort_keys=True).encode()).hexdigest()
     old = db.scalar(select(GenerationRequest).where(GenerationRequest.key == key).with_for_update())
     if old is not None:
         expiry = old.expires_at.replace(tzinfo=now().tzinfo)

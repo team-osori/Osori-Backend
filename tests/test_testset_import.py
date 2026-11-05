@@ -223,6 +223,8 @@ def test_legacy_generation_replay_derives_additive_counts(db_and_client):
     from sqlalchemy import select
     from app.main import app
     from app.models.policy import GenerationRequest
+    import hashlib
+    import json
     from app.services.question_generation import get_question_generator
     from tests.test_policy_testsets import FakeGenerator
     factory, client = db_and_client
@@ -238,6 +240,7 @@ def test_legacy_generation_replay_derives_additive_counts(db_and_client):
         cached['data'].pop('questionCount')
         cached['data'].pop('approvedCount')
         row.response = cached
+        row.request_hash = hashlib.sha256(json.dumps({**body, 'categories': None}, sort_keys=True).encode()).hexdigest()
         db.commit()
     replay = client.post(path + '/questions/generate', json=body, headers=h)
     assert replay.json() == result.json()
