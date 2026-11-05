@@ -12,7 +12,7 @@ from sqlalchemy.exc import OperationalError
 
 from app.core.concurrency import is_write_conflict
 from app.core.database import SessionLocal
-from app.core.secrets import decrypt_secret
+from app.core.secrets import unpack_secrets
 from app.models import auth, project, prompt, policy  # noqa: F401 - referenced tables
 from app.models.evaluation import Evaluation, EvaluationItem
 from app.models.project import Chatbot, Project
@@ -169,9 +169,11 @@ async def judge_response(judge, inputs, question, answer, evidence, *, side='a')
 async def execute_side(inputs, question, side, secret, judge, sender):
     """Call both variants with the same frozen request settings and isolated network sessions."""
     try:
+        # secret은 (챗봇 인증 키, 답변 생성용 AI 키). 예전 호출부는 인증 키 문자열 하나만 넘김
+        auth_secret, llm_secret = secret if isinstance(secret, tuple) else (secret, None)
         result = await execute_chatbot(deepcopy(inputs['connection']['config']), question['question'],
-            inputs['prompts'].get(side, {}).get('content'), secret, sender=sender,
-            apply_prompt=not inputs.get('useConfiguredPrompt', False))
+            inputs['prompts'].get(side, {}).get('content'), auth_secret, sender=sender,
+            apply_prompt=not inputs.get('useConfiguredPrompt', False), llm_secret=llm_secret)
         if result.error:
             failed = failed_side(result.error['code'], result.error['message'], question['id'], inputs=inputs, question=question)
             failed.update(latencyMs=result.latency_ms, attemptCount=result.attempt_count)
@@ -242,7 +244,7 @@ async def process_one(factory=SessionLocal, *, sender=None, judge=None, stop_eve
         try:
             if judge.descriptor() != inputs['judge']:
                 raise ValueError('Judge settings changed')
-            secret = decrypt_secret(row.secret_ciphertext) if row.secret_ciphertext else None
+            secret = unpack_secrets(row.secret_ciphertext)
         except Exception:
             close_interrupted(db, row, 'EXECUTION_CONFIG_UNAVAILABLE')
             db.commit()

@@ -145,3 +145,19 @@ SQLite 테스트는 HTTP API·DB·워커를 연결하고 외부 호출만 대체
 이번 검증 결과: 기본 테스트 83개 통과(별도 DB 테스트 12개 제외), 임시 MariaDB 11.8에서 통합 테스트 12개 통과. MySQL 서버 자체는 로컬 설치의 라이브러리 문제로 실행되지 않아 MySQL 실서버 검증은 수행하지 못했습니다. 마이그레이션 적용·롤백과 모델 대비 차이 검사는 SQLite에서 통과했습니다. 실제 기업 서버 연결은 별도 확인이 필요합니다.
 
 구현 참고: [aiohttp](https://docs.aiohttp.org/en/stable/client_advanced.html), [Fernet](https://cryptography.io/en/latest/fernet/).
+
+## 답변 생성용 AI API 키 (#43)
+
+평가 대상 RAG 서버가 답변 생성에 쓰는 AI API 키(예: OpenAI)를 연결마다 저장해 매 호출에 함께 보낸다.
+
+1. `PUT /connection`에 `llmKeyHeaderName`(예: `X-OpenAI-Key`)을 함께 저장한다. 생략하면 키를 보내지 않는다.
+   예약 헤더·인증 헤더와 같은 이름, 같은 이름의 일반 헤더는 400이다.
+2. `PUT /connection/llm-secret`에 `{expectedRevision, secret}`을 보낸다. 헤더 이름이 없으면 409 `LLM_KEY_HEADER_REQUIRED`.
+   삭제는 `DELETE /connection/llm-secret` + `If-Match: "<revision>"`. revision 규칙은 기존 secret API와 같다.
+3. 응답의 `llmKeyConfigured`로 등록 여부를 확인한다. 키 값은 돌려주지 않는다.
+
+- 두 비밀값(인증 키, AI 키)은 기존 `secret_ciphertext` 컬럼에 함께 암호화해 저장한다(마이그레이션 없음).
+  인증 키만 있으면 예전 형식 그대로 저장하고, 예전 값은 인증 키로 읽는다.
+- URL 또는 `llmKeyHeaderName`을 바꾸면 AI 키를 지운다. 인증 키를 지워도 AI 키는 남고 그 반대도 같다.
+- 답변·근거에 키 문자열이 나오면 인증 키와 같이 `[REDACTED]`로 가린다.
+- 평가는 실행 시점의 두 비밀값을 그대로 스냅샷해 사용한다.

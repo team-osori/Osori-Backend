@@ -124,7 +124,8 @@ async def send_once(config: dict, payload: dict, headers: dict) -> str | Chatbot
 
 
 async def execute_chatbot(config: dict, question: str, prompt: str | None,
-                          secret: str | None, *, sender=None, apply_prompt=True) -> GatewayResult:
+                          secret: str | None, *, sender=None, apply_prompt=True,
+                          llm_secret: str | None = None) -> GatewayResult:
     """No session sharing, no secret logging, and only explicitly safe bounded retries."""
     sender = sender or send_once
     start = monotonic()
@@ -141,6 +142,10 @@ async def execute_chatbot(config: dict, question: str, prompt: str | None,
             raise ApiError(409, 'CONNECTION_SECRET_REQUIRED', '인증정보를 먼저 등록해 주세요.')
         headers['Authorization' if auth['type'] == 'BEARER' else auth['headerName']] = (
             f'Bearer {secret}' if auth['type'] == 'BEARER' else secret)
+    # 평가 대상이 답변 생성에 쓰는 AI 키. 헤더 이름을 정했고 키가 등록돼 있을 때만 보냄
+    if config.get('llmKeyHeaderName') and llm_secret:
+        headers[config['llmKeyHeaderName']] = llm_secret
+    hidden = [value for value in (secret, llm_secret) if value]
     retries = config['maxRetries'] if config['retrySafe'] else 0
     for attempt in range(1, retries + 2):
         try:
@@ -149,9 +154,9 @@ async def execute_chatbot(config: dict, question: str, prompt: str | None,
                 reply = await sender(config, deepcopy(payload), dict(headers))
             answer = reply.answer if isinstance(reply, ChatbotReply) else reply
             evidence = reply.evidence if isinstance(reply, ChatbotReply) else Evidence().model_dump()
-            if secret:
-                answer = answer.replace(secret, '[REDACTED]')
-                evidence = redact_evidence(evidence, secret)
+            for value in hidden:
+                answer = answer.replace(value, '[REDACTED]')
+                evidence = redact_evidence(evidence, value)
             return GatewayResult(answer, int((monotonic() - start) * 1000), attempt, None, evidence)
         except TimeoutError:
             error = GatewayError('UPSTREAM_TIMEOUT', '기업 챗봇 응답 시간이 초과되었습니다.', True)
