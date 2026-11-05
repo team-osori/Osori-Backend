@@ -22,3 +22,56 @@
 
 아직 제공사를 정하지 않은 판정 AI는 `JUDGE_NOT_CONFIGURED`로 표시한다.
 답변 수집 완료와 판정 가능 여부는 별도로 표현하며 임의 점수를 생성하지 않는다.
+
+## 기대 조건별 판정 및 채점 프로파일
+
+단일 평가와 명시적 `mode: COMPARE`는 v2 프로파일을 사용한다. 정책 준수는 pass/fail/판단 불가,
+질문 해결도(`questionResolution`)와 전달 품질(`communicationQuality`)은 0~4점, 3점 이상 통과다.
+스냅샷의 `criteria`에 점수별 설명과 통과 임계값을 보존한다.
+mode 없이 A/B를 지정한 기존 클라이언트와 기존 실행은 v1 네 기준을 유지한다.
+
+A 담당의 확정 스냅샷은 다음 형식의 `expectedConditions`를 제공한다.
+
+```json
+{
+  "expectedConditions": [{
+    "id": "서버가-발급한-조건-ID",
+    "description": "사용한 제품의 단순 변심 반품은 불가능하다고 안내한다.",
+    "kind": "required",
+    "category": "policy",
+    "policyVersionId": "실제-정책-버전-ID",
+    "ruleKeys": ["refund"],
+    "evidenceQuote": "사용한 제품은 단순 변심 반품이 불가능합니다."
+  }]
+}
+```
+
+조건 ID·필수/금지 구분·분류·규칙·정책 근거를 보존한다. 평가 전용 스냅샷에서는
+requirement/criterion/sourceQuote 필드로 정규화하며 A의 원본 레코드는 수정하지 않는다.
+판정은 분류별 점수에 그치지 않고 각 조건 ID에 대해 수행한다.
+
+조건 criterion은 policy/questionResolution/communicationQuality/retrieval/grounding이다.
+기대 조건이 없는 과거 확정본은 A의 legacy_conditions로 기대 행동과 각 금지 행동에
+조건을 구성한다. 조건 ID는 질문 ID와 순번에 기반한 안정적인 UUID5이며 클라이언트는
+서버가 제공한 ID를 그대로 사용한다. A 원본 질문 레코드는 수정하지 않는다.
+
+판정 모델은 `ConditionJudgement` 형식으로 세 기준과 모든 조건의 `conditionResults`를 반환한다.
+각 조건 판정은 conditionId·question_id·status·verdict·reason·evidence_refs·error를 포함한다.
+유효한 판정에는 해당 정책과 답변의 서버 발급 근거 ID가 모두 필요하다.
+조건 누락·중복·타 문항/조건/근거 참조, 점수와 verdict 모순, 정책 조건과 정책 요약 모순은
+`INVALID_JUDGE_OUTPUT`이며 판정 실패로 기록한다. 검색 자료가 없다는 이유로 정책 자체 판정을 지우지 않는다.
+
+모델 제공사와 실제 API 형식은 미정이다. get_evaluation_judge의 어댑터 연결부를 사용하며
+현재 기본 어댑터는 모든 기준과 조건을 미판정으로 반환한다. 테스트 어댑터는 테스트에서만 사용한다.
+
+## A 담당 구현과의 확정 연결 (PR #14 반영)
+
+A의 실제 조건 형식은 id, description, kind(required/forbidden), category,
+policyVersionId, ruleKeys, evidenceQuote다. B는 이를 읽어 평가 전용 스냅샷에
+requirement=description, sourceQuote=evidenceQuote를 대응시키며 **조건 ID와 kind·category·ruleKeys를 보존**한다.
+response 분류는 질문 해결도에 대응하며 retrieval/grounding은 별도 진단 조건으로 유지한다.
+분류명 때문에 필수·금지 조건을 합치거나 생략하지 않는다. forbidden 조건의 pass는 금지 행동을 하지 않았다는 의미다.
+
+A의 schemaVersion=2 확정본을 직접 수용한다. schemaVersion=1 과거 확정본은
+A의 legacy_conditions 규칙으로 기대 행동 및 모든 금지 행동에 안정적인 조건 ID를 구성한다.
+이미 저장한 B 스냅샷의 기존 조건 ID도 그대로 읽는다. 원본 확정본과 과거 평가 결과는 수정하지 않는다.
