@@ -12,6 +12,22 @@ from deploy.archive import receive, validate_members
 from deploy.ssh_entrypoint import parse_command
 
 
+def test_email_deployment_settings_fail_closed(monkeypatch):
+    """Do not release signup without SMTP credentials and a shared signing secret."""
+    from deploy.manage import validate_email_settings
+    for name in ('SMTP_HOST', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_FROM', 'EMAIL_VERIFICATION_SECRET', 'SMTP_PORT'):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(ValueError):
+        validate_email_settings()
+    for name in ('SMTP_HOST', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_FROM'):
+        monkeypatch.setenv(name, 'configured')
+    monkeypatch.setenv('EMAIL_VERIFICATION_SECRET', 'x' * 32)
+    validate_email_settings()
+    monkeypatch.setenv('SMTP_PORT', '70000')
+    with pytest.raises(ValueError):
+        validate_email_settings()
+
+
 def test_readiness_reports_release_and_database_failure(db_and_client, monkeypatch):
     _, client = db_and_client
     monkeypatch.setenv('OSORI_RELEASE', 'a' * 40)

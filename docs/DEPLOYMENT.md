@@ -32,6 +32,8 @@ main의 테스트가 성공하면 production 환경에서 SSH로 해당 커밋�
 
 `DATABASE_URL`, `CONNECTION_ENCRYPTION_KEY`, `CORS_ORIGINS`는 서버 환경 파일에서 관리합니다. 초기 bootstrap이 DB 비밀번호·암호화 키를 임의 생성하고 파일에만 저장하며 로그에 출력하지 않습니다. 기존 환경 파일은 덮어쓰지 않습니다. 프론트엔드 주소가 정해지면 CORS_ORIGINS를 수정하고 API 서비스를 재시작하세요. 암호화 키를 임의로 바꾸면 기존 챗봇 비밀값을 복호화하지 못하므로 보존해야 합니다.
 
+이메일 인증을 사용하는 릴리스를 배포하기 전에 같은 환경 파일에 `EMAIL_VERIFICATION_SECRET`(무작위 32바이트 이상), `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`을 설정하세요. 서버는 STARTTLS를 사용합니다. 배포 사전 검사는 필수 설정과 포트를 확인하지만 실제 메일 도착은 검증하지 않습니다. 설정이 없으면 실행 중인 기존 릴리스를 중단하기 전에 배포가 실패합니다. 비밀값은 로그나 저장소에 넣지 마세요.
+
 ## GitHub production 환경
 
 production 환경은 main 브랜치의 배포만 허용합니다.

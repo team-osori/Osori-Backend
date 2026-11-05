@@ -12,7 +12,24 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 
-def preflight():
+def validate_email_settings():
+    """Fail before deployment if required email verification settings are absent."""
+    if len(os.environ.get('EMAIL_VERIFICATION_SECRET', '').encode()) < 32:
+        raise ValueError('EMAIL_VERIFICATION_SECRET must be at least 32 bytes')
+    if any(not os.environ.get(name) for name in ('SMTP_HOST', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_FROM')):
+        raise ValueError('SMTP settings are required')
+    try:
+        port = int(os.environ.get('SMTP_PORT', '587'))
+    except ValueError:
+        raise ValueError('Invalid SMTP port') from None
+    if not 1 <= port <= 65535:
+        raise ValueError('Invalid SMTP port')
+
+
+def preflight(*, check_email=True):
+    """Check release dependencies before stopping the running service."""
+    if check_email:
+        validate_email_settings()
     # Fail before stopping the current release if OCR dependencies are missing.
     if not shutil.which("pdftoppm") or not shutil.which("tesseract"):
         raise ValueError("Install poppler-utils and tesseract-ocr with kor/eng language data")
@@ -43,7 +60,7 @@ def main():
     args = parser.parse_args()
     load_dotenv('/etc/osori-backend.env', override=True)
     try:
-        preflight()
+        preflight(check_email=args.action != 'backup')
         if args.action == 'backup':
             backup(args.destination)
         elif args.action == 'migrate':
