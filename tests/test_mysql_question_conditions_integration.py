@@ -42,3 +42,22 @@ def test_mysql_concurrent_edit_records_only_winning_change(mysql_client):
     frozen = client.get(path + '/evaluation-snapshot', headers=headers).json()['data']
     assert frozen['schemaVersion'] == 2
     assert frozen['questions'][0]['expectedConditions'] == winner['expectedConditions']
+
+
+def test_mysql_concurrent_csv_import_records_only_one_batch(mysql_client):
+    from test_testset_import import upload
+    client, _, _, _ = mysql_client
+    headers, _, _, _, _, path, _ = setup(client, login='q' + uuid4().hex[:20])
+    barrier = Barrier(2)
+
+    def import_batch(_):
+        barrier.wait(timeout=10)
+        return upload(client, path, headers, 'question,category,modelAnswer\n질문,normal,답안\n두 번째,ambiguous,확인 요청')
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(import_batch, (1, 2)))
+    assert sorted(r.status_code for r in responses) == [201, 409]
+    version = client.get(path, headers=headers).json()['data']
+    assert version['revision'] == 2 and version['questionCount'] == 2 and version['approvedCount'] == 0
+    history = client.get(path + '/history', headers=headers).json()['data']['items']
+    assert len(history) == 2 and all(event['action'] == 'created' for event in history)

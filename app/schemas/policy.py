@@ -290,6 +290,17 @@ class TestSetVersionOut(TestSetVersionSummary):
     questionCount: int = 0
     approvedCount: int = 0
 
+    @model_validator(mode='before')
+    @classmethod
+    def legacy_cached_counts(cls, value):
+        # Generation replays saved before #27 do not contain the additive counters.
+        if isinstance(value, dict) and 'questions' in value:
+            rows = value['questions']
+            value = {**value}
+            value.setdefault('questionCount', len(rows))
+            value.setdefault('approvedCount', sum(q.get('reviewStatus') == 'approved' and q.get('reviewedBy') is not None for q in rows))
+        return value
+
 
 class TestSetDetail(BaseModel):
     testSet: TestSetOut
