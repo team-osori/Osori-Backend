@@ -20,6 +20,7 @@ from app.schemas.responses import Data, ERROR_RESPONSES
 from app.services.auth import now
 from app.services.chatbot_gateway import validate_endpoint
 from app.services.prompts import get_version
+from app.services.project_listing import latest_connection_tests
 
 router = APIRouter(prefix='/api/projects/{projectId}/services/{serviceId}',
                    tags=['connections'], responses=ERROR_RESPONSES)
@@ -185,3 +186,13 @@ def read_test(connectionTestId: ResourceId, service: OwnedService, db: Db):
     if job is None:
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '연결 테스트를 찾을 수 없습니다.')
     return {'data': test_data(job)}
+
+
+@router.get('/connection-tests', response_model=Data[ConnectionTestResponse | None])
+def read_latest_test(service: OwnedService, db: Db):
+    """Recover the latest test after refresh; old revisions are explicitly stale."""
+    job = latest_connection_tests(db, [service.id]).get(service.id)
+    if job is None:
+        return {'data': None}
+    connection = get_connection(db, service.id)
+    return {'data': {**test_data(job), 'isCurrentRevision': job.connection_revision == connection.revision}}

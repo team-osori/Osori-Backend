@@ -16,7 +16,8 @@ def test_projects_and_ownership(db_and_client):
     other = register(client, 'other')
     assert client.post('/api/projects', json={'name': 'test'}).status_code == 401
     empty = client.get('/api/projects', headers=owner).json()['data']
-    assert empty == {'items': [], 'nextCursor': None}
+    assert empty == {'items': [], 'nextCursor': None, 'total': 0,
+        'statusCounts': {'SETUP': 0, 'RUNNING': 0, 'DONE': 0}}
     created = client.post('/api/projects', json={'name': ' 한빛항공 ', 'description': ' 검증 '}, headers=owner)
     assert created.status_code == 201
     project = created.json()['data']
