@@ -74,6 +74,9 @@ def validate_judgement(output, question, catalog):
             answer = next(source['text'] for source in catalog if source['kind'] == 'answer')
             if quote and quote not in answer:
                 raise ValueError('Issue quote must be present verbatim in the evaluated answer')
+            hypothesis = (decision.get('issue') or {}).get('hypothesis')
+            if hypothesis and any(ref['evidence_id'] not in sources for ref in hypothesis['evidenceRefs']):
+                raise ValueError('A cause hypothesis must reference collected evidence')
     policy_decisions = [decision for decision in decisions if conditions[decision['conditionId']]['criterion'] == 'policy']
     if policy_decisions:
         expected = 'fail' if any(d['verdict'] == 'fail' for d in policy_decisions) else (

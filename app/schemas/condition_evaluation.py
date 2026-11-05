@@ -3,7 +3,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from app.schemas.evaluation import CriterionResult
+from app.schemas.evaluation import CriterionResult, EvidenceReference
 from app.schemas.policy import Id
 
 AnalysisCriterion = Literal['policy', 'questionResolution', 'communicationQuality']
@@ -23,12 +23,20 @@ IssueKind = Literal['condition_omitted', 'policy_contradiction', 'unsupported_cl
                     'incomplete_guidance', 'non_answer', 'unclear_answer', 'other']
 
 
+class CauseHypothesis(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    area: Literal['RETRIEVAL', 'PROMPT', 'MODEL']
+    reason: RequiredText
+    evidenceRefs: Annotated[list[EvidenceReference], Field(min_length=1, max_length=20)]
+
+
 class IssueDetail(BaseModel):
     model_config = ConfigDict(extra='forbid')
     kind: IssueKind
     answerQuote: RequiredText | None = None
     missingGuidance: Annotated[list[RequiredText], Field(max_length=20)] = []
     recommendation: RequiredText
+    hypothesis: CauseHypothesis | None = None
 
     @model_validator(mode='after')
     def require_observation(self):
