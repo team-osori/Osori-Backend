@@ -86,3 +86,15 @@ def test_single_abandoned_worker_does_not_create_or_count_a_second_call(single_r
     assert summary['criteria']['policy']['b'] is None
     with factory() as db:
         assert db.scalar(select(EvaluationItem)).b is None
+
+
+@pytest.mark.parametrize('change', ['IMPROVED', 'WORSENED', 'UNCHANGED_PASS', 'UNCHANGED_FAIL', 'NOT_COMPARABLE'])
+def test_single_rejects_comparison_filters_instead_of_matching_unrun_b(single_ready, change):
+    """A nonexistent B result must not appear as an incomparable paired result."""
+    factory, client, headers, service, body, original = single_ready
+    path = submit(client, headers, service, body)
+    response = client.get(path + '/items', headers=headers, params={'criterion': 'policy', 'change': change})
+    assert response.status_code == 400
+    assert response.json()['error']['code'] == 'COMPARISON_REQUIRED'
+    unfiltered = client.get(path + '/items', headers=headers).json()['data']['items']
+    assert len(unfiltered) == 1 and unfiltered[0]['changes'] == {}
