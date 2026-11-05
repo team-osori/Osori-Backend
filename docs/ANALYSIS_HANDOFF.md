@@ -82,6 +82,20 @@ hasJudgmentError/needsReview를 같이 표시한다. API 실패는 답변 미충
 
 요약의 analysis.variants는 대표 상태별 문항 수, 검토 필요 수, 오류 유형별 건수를 반환한다.
 오류 유형은 한 문항에서 여러 번 발생할 수 있으므로 문항 수와 합계가 다를 수 있다.
+
+## 원인과 분석 한계
+
+상세 analysis의 facts는 서버가 관측한 사실이다. 검색 자료 유무, 문서 수,
+별도 선택한 프롬프트 버전, 프롬프트 실제 적용 검증 여부, 각 조건 원문이 정확히 포함된 문서 ID를 반환한다.
+원문 문자열 미포함만으로 검색 실패를 확정하지 않는다. 동의어·요약·문서 완전성은 별도 의미 평가가 필요하다.
+
+모델은 미충족 issue.hypothesis에 area(RETRIEVAL/PROMPT/MODEL), reason, evidenceRefs를
+제안할 수 있다. 참조가 수집된 근거에 존재하는지 검증하며 출력은 항상 추정으로 취급한다.
+검색 자료가 없으면 검색 원인 가설을, 선택 프롬프트가 없으면 프롬프트 원인 가설을
+대표 hypotheses에서 제외한다. confirmedCause는 null이고 causeStatus는 UNDETERMINED 또는 HYPOTHESIS다.
+
+limitations는 검색 자료 미제공, 프롬프트 내부·적용 확인 불가, 외부 모델 설정 미확인,
+통제된 원인 분리 실험 미실시 등을 나타내는 코드 목록이다. 미수집 정보로 특정 구성 요소의 실패를 확정하지 않는다.
 ## A 담당 구현과의 확정 연결 (PR #14 반영)
 
 A의 실제 조건 형식은 id, description, kind(required/forbidden), category,

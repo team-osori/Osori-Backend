@@ -147,6 +147,12 @@ async def judge_response(judge, inputs, question, answer, evidence):
         for key in ('retrieval', 'grounding'):
             if output[key]['status'] != 'error':
                 output[key] = ungraded('기업 API의 검색 근거 자료 미제공', question['id'])[key]
+    if error is None and inputs['criteria']['version'] == 2 and evidence.get('documents') is None:
+        conditions = {condition['id']: condition for condition in question['expectedConditions']}
+        for result in output['conditionResults']:
+            if conditions[result['conditionId']]['criterion'] in ('retrieval', 'grounding') and result['status'] != 'error':
+                result.update(status='not_evaluable', verdict=None, reason='기업 API의 검색 근거 자료 미제공',
+                              evidence_refs=[], error=None, issue=None)
     if error is None and inputs['judge']['adapter'] == 'unconfigured':
         error = {'code': 'JUDGE_NOT_CONFIGURED', 'message': '평가 모델이 아직 연결되지 않았습니다.'}
     return output, error

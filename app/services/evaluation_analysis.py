@@ -47,7 +47,46 @@ def describe_side(question, side):
 
 
 def item_analysis(run, item):
-    return {name: describe_side(item.input, getattr(item, name)) for name in side_names(run.inputs)}
+    return {name: {**describe_side(item.input, getattr(item, name)),
+                   **cause_analysis(run.inputs, item.input, name, getattr(item, name))}
+            for name in side_names(run.inputs)}
+
+
+def cause_analysis(inputs, question, name, side):
+    """Keep observable input/output facts separate from unproven causal attribution."""
+    documents = (side or {}).get('evidence', {}).get('documents')
+    prompt = inputs.get('prompts', {}).get(name)
+    facts = {'retrievalTelemetryAvailable': documents is not None,
+             'retrievedDocumentCount': len(documents) if documents is not None else None,
+             'selectedPromptVersionId': prompt['id'] if prompt else None,
+             'promptApplicationVerified': inputs.get('comparisonAssurance', {}).get('promptAppliedVerified', False),
+             'conditionSources': []}
+    for condition in question.get('expectedConditions', []):
+        quote = condition['sourceQuote'] if 'sourceQuote' in condition else condition['evidenceQuote']
+        matches = None if documents is None else [doc['id'] for doc in documents if quote in doc['text']]
+        facts['conditionSources'].append({'conditionId': condition['id'],
+                                         'documentsContainingExactQuote': matches})
+    limitations = ['CAUSAL_ISOLATION_NOT_PERFORMED', 'EXTERNAL_MODEL_SETTINGS_UNVERIFIED']
+    if documents is None:
+        limitations.append('RETRIEVAL_TELEMETRY_UNAVAILABLE')
+    else:
+        limitations.append('EXACT_QUOTE_MATCH_IS_NOT_SEMANTIC_RETRIEVAL_EVALUATION')
+    if not prompt:
+        limitations.append('PROMPT_INTERNALS_UNAVAILABLE')
+    elif not facts['promptApplicationVerified']:
+        limitations.append('PROMPT_APPLICATION_UNVERIFIED')
+    hypotheses = []
+    for decision in (side or {}).get('conditionResults', []):
+        hypothesis = (decision.get('issue') or {}).get('hypothesis')
+        if not hypothesis:
+            continue
+        if hypothesis['area'] == 'RETRIEVAL' and documents is None:
+            continue
+        if hypothesis['area'] == 'PROMPT' and not prompt:
+            continue
+        hypotheses.append({'conditionId': decision['conditionId'], **hypothesis})
+    return {'causeStatus': 'HYPOTHESIS' if hypotheses else 'UNDETERMINED',
+            'confirmedCause': None, 'facts': facts, 'hypotheses': hypotheses, 'limitations': limitations}
 
 
 def summarize(run, items):
