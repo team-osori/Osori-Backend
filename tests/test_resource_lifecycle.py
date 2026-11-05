@@ -36,9 +36,14 @@ def exercise_project_trash(factory, client, monkeypatch):
         db.commit()
     assert client.post(project + '/restore', headers=headers, json={'expectedRevision': 4}).status_code == 409
     with factory() as db:
+        prompt_count = db.scalar(select(func.count()).select_from(PromptVersion))
+        testset_count = db.scalar(select(func.count()).select_from(SetVersion))
         assert cleanup_expired(db)['projects'] == 1
-        assert db.scalar(select(func.count()).select_from(PromptVersion)) == 0
-        assert db.scalar(select(func.count()).select_from(SetVersion)) == 0
+        assert db.get(PromptVersion, body['aPromptVersionId']) is None
+        assert db.get(PromptVersion, body['bPromptVersionId']) is None
+        assert db.get(SetVersion, body['testSetVersionId']) is None
+        assert db.scalar(select(func.count()).select_from(PromptVersion)) == prompt_count - 2
+        assert db.scalar(select(func.count()).select_from(SetVersion)) == testset_count - 1
     assert client.get('/api/projects/trash', headers=headers).json()['data']['items'] == []
 
 
