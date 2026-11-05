@@ -32,7 +32,6 @@ main의 테스트가 성공하면 production 환경에서 SSH로 해당 커밋�
 
 `DATABASE_URL`, `CONNECTION_ENCRYPTION_KEY`, `CORS_ORIGINS`는 서버 환경 파일에서 관리합니다. 초기 bootstrap이 DB 비밀번호·암호화 키를 임의 생성하고 파일에만 저장하며 로그에 출력하지 않습니다. 기존 환경 파일은 덮어쓰지 않습니다. 프론트엔드 주소가 정해지면 CORS_ORIGINS를 수정하고 API 서비스를 재시작하세요. 암호화 키를 임의로 바꾸면 기존 챗봇 비밀값을 복호화하지 못하므로 보존해야 합니다.
 
-이메일 인증을 사용하는 릴리스를 배포하기 전에 같은 환경 파일에 `EMAIL_VERIFICATION_SECRET`(무작위 32바이트 이상), `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`을 설정하세요. 서버는 STARTTLS를 사용합니다. 배포 사전 검사는 필수 설정과 포트를 확인하지만 실제 메일 도착은 검증하지 않습니다. 설정이 없으면 실행 중인 기존 릴리스를 중단하기 전에 배포가 실패합니다. 비밀값은 로그나 저장소에 넣지 마세요.
 
 ## GitHub production 환경
 
@@ -79,7 +78,7 @@ readlink -f /opt/osori-backend/current
 
 ### 사전 검사 실패 복구
 
-사전 검사는 필수 설정 이름과 고정된 안내만 출력하며 환경변수 값이나 DB 드라이버의 예외 원문은 출력하지 않습니다. SMTP 설정 누락·잘못된 포트·OCR 실행 파일/언어팩·DB URL·암호화 키·DB 연결 실패를 구분합니다. 예상하지 못한 예외는 기존처럼 종류만 출력합니다.
+사전 검사는 필수 설정 이름과 고정된 안내만 출력하며 환경변수 값이나 DB 드라이버의 예외 원문은 출력하지 않습니다. OCR 실행 파일/언어팩·DB URL·암호화 키·DB 연결 실패를 구분합니다. 예상하지 못한 예외는 기존처럼 종류만 출력합니다.
 
 OCR 도입 이전부터 운영하던 서버는 다음 패키지를 한 번 설치해야 합니다. 코드 배포는 OS 패키지를 자동 설치하지 않습니다.
 
@@ -89,7 +88,6 @@ sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-kor tesseract-
 tesseract --list-langs  # eng, kor 포함 여부 확인
 ```
 
-이메일 설정은 GitHub Secrets가 아닌 `/etc/osori-backend.env`에 입력합니다. 실제 STARTTLS SMTP 계정과 발신 주소를 사용하고, 배포를 통과시키기 위한 임시 값은 넣지 마세요. `SMTP_PORT`는 생략하면 587입니다. 누락된 `EMAIL_VERIFICATION_SECRET`은 충분한 난수로 생성하되 이미 있는 키는 보존합니다. 설정을 준비한 뒤 실패한 릴리스의 `.venv/bin/python -I deploy/manage.py preflight`를 해당 릴리스 디렉터리에서 `osori` 사용자로 실행하면 서비스를 중단하지 않고 확인할 수 있습니다. 통과하면 Actions에서 **Re-run failed jobs**를 실행합니다.
 
 ## 의존성 갱신
 

@@ -9,35 +9,12 @@ from deploy import manage
 
 @pytest.fixture
 def configured(monkeypatch):
-    for name in ('SMTP_HOST', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_FROM'):
-        monkeypatch.setenv(name, 'private-value-do-not-log')
-    monkeypatch.setenv('EMAIL_VERIFICATION_SECRET', 'private-signing-secret' * 2)
-    monkeypatch.setenv('SMTP_PORT', '587')
     monkeypatch.setenv('DATABASE_URL', 'mysql+pymysql://user:private-password@127.0.0.1/osori')
     monkeypatch.setenv('CONNECTION_ENCRYPTION_KEY', Fernet.generate_key().decode())
     monkeypatch.setattr(manage, 'load_dotenv', lambda *a, **kw: None)
     monkeypatch.setattr(manage.sys, 'argv', ['manage.py', 'preflight'])
     monkeypatch.setattr(manage.shutil, 'which', lambda name: '/usr/bin/' + name)
     monkeypatch.setattr(manage.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout='eng\nkor\n'))
-
-
-def test_missing_email_settings_report_every_name(configured, monkeypatch, capsys):
-    names = ('EMAIL_VERIFICATION_SECRET', 'SMTP_HOST', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_FROM')
-    for name in names:
-        monkeypatch.delenv(name)
-    assert manage.main() == 1
-    error = capsys.readouterr().err
-    assert all(name in error for name in names)
-    assert 'private-' not in error
-
-
-@pytest.mark.parametrize('port', ['0', '65536', 'private-invalid-port'])
-def test_invalid_port_value_is_hidden(configured, monkeypatch, capsys, port):
-    monkeypatch.setenv('SMTP_PORT', port)
-    assert manage.main() == 1
-    error = capsys.readouterr().err
-    assert 'SMTP_PORT must be an integer between 1 and 65535' in error
-    assert 'private-' not in error
 
 
 @pytest.mark.parametrize('failure,expected', [
@@ -78,6 +55,11 @@ def test_unexpected_exception_text_stays_hidden(configured, monkeypatch, capsys)
 
 
 def test_successful_preflight_disposes_connection(configured, monkeypatch):
+    # Deployment must work with no mail configuration, including inherited test env.
+    import os
+    for name in tuple(os.environ):
+        if name.startswith(('SMTP_', 'EMAIL_VERIFICATION_', 'AUTH_EMAIL_')):
+            monkeypatch.delenv(name)
     from unittest.mock import MagicMock
     engine = MagicMock()
     monkeypatch.setattr(manage, 'create_engine', lambda url: engine)

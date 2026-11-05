@@ -60,7 +60,7 @@ def test_mysql_duplicate_invitations_and_acceptance(mysql_client):
     barrier = Barrier(2)
     def invite(_):
         barrier.wait(timeout=10)
-        return client.post(project + '/invitations', headers=headers, json={'email': 'invite_member@example.com'})
+        return client.post(project + '/invitations', headers=headers, json={'loginId': 'invite_member'})
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(invite, (1, 2)))
     assert sorted(result.status_code for result in results) == [201, 409]

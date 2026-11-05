@@ -17,29 +17,8 @@ class PreflightError(ValueError):
     """An operator-facing message containing only static text and setting names."""
 
 
-def validate_email_settings():
-    """Fail before deployment if required email verification settings are absent."""
-    problems = []
-    if len(os.environ.get('EMAIL_VERIFICATION_SECRET', '').encode()) < 32:
-        problems.append('EMAIL_VERIFICATION_SECRET must be at least 32 bytes')
-    missing = [name for name in ('SMTP_HOST', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_FROM')
-               if not os.environ.get(name)]
-    if missing:
-        problems.append('Missing required settings: ' + ', '.join(missing))
-    try:
-        port = int(os.environ.get('SMTP_PORT', '587'))
-    except ValueError:
-        port = 0
-    if not 1 <= port <= 65535:
-        problems.append('SMTP_PORT must be an integer between 1 and 65535')
-    if problems:
-        raise PreflightError('; '.join(problems))
-
-
-def preflight(*, check_email=True):
+def preflight():
     """Check release dependencies before stopping the running service."""
-    if check_email:
-        validate_email_settings()
     # Fail before stopping the current release if OCR dependencies are missing.
     if not shutil.which("pdftoppm") or not shutil.which("tesseract"):
         raise PreflightError("Install poppler-utils, tesseract-ocr, tesseract-ocr-kor and tesseract-ocr-eng")
@@ -83,7 +62,7 @@ def main():
     args = parser.parse_args()
     load_dotenv('/etc/osori-backend.env', override=True)
     try:
-        preflight(check_email=args.action != 'backup')
+        preflight()
         if args.action == 'backup':
             backup(args.destination)
         elif args.action == 'migrate':

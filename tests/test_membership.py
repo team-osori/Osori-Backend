@@ -6,7 +6,6 @@ from test_projects import register
 
 
 def test_project_invitation_accept_roles_and_revocation(db_and_client):
-    """Exercise email invitations, access changes, and member removal."""
     factory, client = db_and_client
     owner = register(client, 'member_owner')
     member = register(client, 'member_user')
@@ -14,7 +13,7 @@ def test_project_invitation_accept_roles_and_revocation(db_and_client):
     project = client.post('/api/projects', headers=owner, json={'name': 'Shared'}).headers['location']
     member_id = client.get('/api/auth/me', headers=member).json()['data']['id']
     owner_id = client.get('/api/auth/me', headers=owner).json()['data']['id']
-    invite = client.post(project + '/invitations', headers=owner, json={'email': 'member_user@example.com'})
+    invite = client.post(project + '/invitations', headers=owner, json={'loginId': 'member_user'})
     assert invite.status_code == 201, invite.text
     invitation = invite.json()['data']
     assert client.get(project, headers=member).status_code == 404
@@ -28,8 +27,8 @@ def test_project_invitation_accept_roles_and_revocation(db_and_client):
     assert client.get('/api/projects', headers=member).json()['data']['items'][0]['id'] == invitation['projectId']
     assert client.get('/api/auth/me', headers=member).json()['data']['projectRoles'] == [{'projectId': invitation['projectId'], 'role': 'member'}]
     assert client.patch(project, headers=member, json={'expectedRevision': 1, 'name': 'no'}).status_code == 403
-    assert client.post(project + '/invitations', headers=member, json={'email': 'member_other@example.com'}).status_code == 403
-    assert client.post(project + '/invitations', headers=owner, json={'email': 'member_user@example.com'}).status_code == 409
+    assert client.post(project + '/invitations', headers=member, json={'loginId': 'member_other'}).status_code == 403
+    assert client.post(project + '/invitations', headers=owner, json={'loginId': 'member_user'}).status_code == 409
     member_path = project + '/members/' + member_id
     assert client.patch(member_path, headers=owner, json={'expectedRevision': 1, 'role': 'admin'}).status_code == 409
     assert client.patch(member_path, headers=owner, json={'expectedRevision': 2, 'role': 'admin'}).status_code == 200
@@ -44,19 +43,18 @@ def test_project_invitation_accept_roles_and_revocation(db_and_client):
         user.last_seen_at = now() - timedelta(days=2)
         db.commit()
     me = client.get('/api/auth/me', headers=owner).json()['data']
-    assert me['email'] == 'member_owner@example.com' and me['lastSeenAt']
+    assert 'email' not in me and me['lastSeenAt']
     roster = client.get(project + '/members', headers=owner).json()['data']['items']
     assert len(roster) == 1 and roster[0]['status'] == 'owner'
     assert roster[0]['lastSeenAt'] == me['lastSeenAt']
 
 
 def test_invitations_are_hidden_after_project_deleted(db_and_client):
-    """Hide pending invitations after a project is deleted."""
     _, client = db_and_client
     owner = register(client, 'trash_owner')
     member = register(client, 'trash_member')
     project = client.post('/api/projects', headers=owner, json={'name': 'Shared'}).headers['location']
-    invitation = client.post(project + '/invitations', headers=owner, json={'email': 'trash_member@example.com'}).json()['data']
+    invitation = client.post(project + '/invitations', headers=owner, json={'loginId': 'trash_member'}).json()['data']
     assert client.delete(project, headers={**owner, 'If-Match': '"1"'}).status_code == 204
     assert client.get('/api/invitations', headers=member).json()['data']['items'] == []
     assert client.post('/api/invitations/' + invitation['id'] + '/accept', headers=member,
