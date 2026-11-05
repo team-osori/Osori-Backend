@@ -4,6 +4,7 @@ import asyncio
 from copy import deepcopy
 from datetime import timedelta
 import logging
+import os
 import signal
 import time
 
@@ -27,6 +28,16 @@ from app.services import condition_evaluation
 
 LEASE_SECONDS = 600
 JUDGE_TIMEOUT_SECONDS = 30
+DEFAULT_ITEM_CONCURRENCY = 1
+
+
+def item_concurrency():
+    """Return a bounded per-evaluation concurrency safe for shared upstream services."""
+    try:
+        value = int(os.getenv('EVALUATION_ITEM_CONCURRENCY', DEFAULT_ITEM_CONCURRENCY))
+    except ValueError:
+        return DEFAULT_ITEM_CONCURRENCY
+    return min(max(value, 1), 10)
 
 
 def ungraded(reason, question_id, error=None, *, inputs=None, question=None):
@@ -212,6 +223,98 @@ async def execute_cancellable(factory, run_id, token, inputs, question, side, se
         await asyncio.gather(task, return_exceptions=True)
 
 
+async def process_item(factory, run_id, token, item_id, inputs, secret, judge, sender, semaphore, stop_event):
+    """Execute one item while allowing unrelated items to use the bounded worker pool."""
+    async with semaphore:
+        if stop_event and stop_event.is_set():
+            return 'stopped'
+        with factory() as db:
+            row = locked_run(db, run_id, token)
+            if row is None:
+                return 'aborted'
+            item = db.get(EvaluationItem, item_id)
+            if item.status in ('COMPLETED', 'FAILED', 'INTERRUPTED'):
+                return 'completed'
+            question = deepcopy(item.input)
+            for side in side_names(inputs):
+                if getattr(item, side) is None:
+                    setattr(item, side, pending_side('NOT_RUN', item.question_id, inputs=inputs, question=item.input))
+            item.status = 'RUNNING'
+            row.heartbeat_at = now()
+            db.commit()
+        for side in side_names(inputs):
+            with factory() as db:
+                row = locked_run(db, run_id, token)
+                if row is None:
+                    return 'aborted'
+                item = db.get(EvaluationItem, item_id)
+                if getattr(item, side)['callStatus'] != 'NOT_RUN':
+                    continue
+                setattr(item, side, pending_side('RUNNING', item.question_id, inputs=inputs, question=item.input))
+                row.heartbeat_at = now()
+                db.commit()
+            outcome = await execute_cancellable(factory, run_id, token, inputs, question, side, secret, judge, sender)
+            if outcome is None:
+                return 'aborted'
+            with factory() as db:
+                row = locked_run(db, run_id, token)
+                if row is None:
+                    return 'aborted'
+                item = db.get(EvaluationItem, item_id)
+                setattr(item, side, outcome)
+                row.heartbeat_at = now()
+                db.commit()
+        with factory() as db:
+            row = locked_run(db, run_id, token)
+            if row is None:
+                return 'aborted'
+            item = db.get(EvaluationItem, item_id)
+            statuses = [getattr(item, side)['callStatus'] for side in side_names(inputs)]
+            item.status = 'COMPLETED' if all(status == 'SUCCEEDED' for status in statuses) else (
+                'FAILED' if 'FAILED' in statuses else 'INTERRUPTED')
+            row.completed_questions += 1
+            row.failed_questions += int(item.status in ('FAILED', 'INTERRUPTED'))
+            db.commit()
+    return 'completed'
+
+
+async def process_items(factory, run_id, token, item_ids, inputs, secret, judge, sender, stop_event):
+    """Fill a bounded worker pool without starting queued items after an abrupt failure."""
+    semaphore = asyncio.Semaphore(item_concurrency())
+    pending_ids = iter(item_ids)
+    tasks = set()
+    results = []
+
+    def start_next():
+        try:
+            item_id = next(pending_ids)
+        except StopIteration:
+            return False
+        tasks.add(asyncio.create_task(process_item(factory, run_id, token, item_id, inputs, secret, judge, sender,
+                                                   semaphore, stop_event)))
+        return True
+
+    while len(tasks) < item_concurrency() and start_next():
+        pass
+    halted = False
+    while tasks:
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            tasks.remove(task)
+            try:
+                results.append(task.result())
+            except BaseException:
+                for remaining in tasks:
+                    remaining.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+        if any(result in ('aborted', 'stopped') for result in results):
+            halted = True
+        while not halted and len(tasks) < item_concurrency() and start_next():
+            pass
+    return results
+
+
 async def process_one(factory=SessionLocal, *, sender=None, judge=None, stop_event=None):
     """Claim one run atomically, persist each response, and keep unrelated question failures isolated."""
     expire_abandoned(factory)
@@ -247,61 +350,16 @@ async def process_one(factory=SessionLocal, *, sender=None, judge=None, stop_eve
             close_interrupted(db, row, 'EXECUTION_CONFIG_UNAVAILABLE')
             db.commit()
             return True
-    for item_id in item_ids:
-        if stop_event and stop_event.is_set():
-            with factory() as db:
-                row = locked_run(db, id_, token)
-                if row:
-                    close_interrupted(db, row, 'WORKER_STOPPED')
-                    db.commit()
-            return True
+    results = await process_items(factory, id_, token, item_ids, inputs, secret, judge, sender, stop_event)
+    if 'aborted' in results:
+        return True
+    if 'stopped' in results:
         with factory() as db:
             row = locked_run(db, id_, token)
-            if row is None:
-                return True
-            item = db.get(EvaluationItem, item_id)
-            if item.status in ('COMPLETED', 'FAILED', 'INTERRUPTED'):
-                continue
-            question = deepcopy(item.input)
-            for side in side_names(inputs):
-                if getattr(item, side) is None:
-                    setattr(item, side, pending_side('NOT_RUN', item.question_id, inputs=inputs, question=item.input))
-            item.status = 'RUNNING'
-            row.heartbeat_at = now()
-            db.commit()
-        for side in side_names(inputs):
-            with factory() as db:
-                row = locked_run(db, id_, token)
-                if row is None:
-                    return True
-                item = db.get(EvaluationItem, item_id)
-                if getattr(item, side)['callStatus'] != 'NOT_RUN':
-                    continue
-                setattr(item, side, pending_side('RUNNING', item.question_id, inputs=inputs, question=item.input))
-                row.heartbeat_at = now()
+            if row:
+                close_interrupted(db, row, 'WORKER_STOPPED')
                 db.commit()
-            outcome = await execute_cancellable(factory, id_, token, inputs, question, side, secret, judge, sender)
-            if outcome is None:
-                return True
-            with factory() as db:
-                row = locked_run(db, id_, token)
-                if row is None:
-                    return True
-                item = db.get(EvaluationItem, item_id)
-                setattr(item, side, outcome)
-                row.heartbeat_at = now()
-                db.commit()
-        with factory() as db:
-            row = locked_run(db, id_, token)
-            if row is None:
-                return True
-            item = db.get(EvaluationItem, item_id)
-            statuses = [getattr(item, side)['callStatus'] for side in side_names(inputs)]
-            item.status = 'COMPLETED' if all(status == 'SUCCEEDED' for status in statuses) else (
-                'FAILED' if 'FAILED' in statuses else 'INTERRUPTED')
-            row.completed_questions += 1
-            row.failed_questions += int(item.status in ('FAILED', 'INTERRUPTED'))
-            db.commit()
+        return True
 
     with factory() as db:
         row = locked_run(db, id_, token)

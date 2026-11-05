@@ -10,6 +10,7 @@ Group=osori
 WorkingDirectory=/opt/osori-backend/current
 EnvironmentFile=/etc/osori-backend.env
 EnvironmentFile=/opt/osori-backend/current/.release.env
+Environment=EVALUATION_ITEM_CONCURRENCY=3
 Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 ExecStart=/opt/osori-backend/current/.venv/bin/python -m app.evaluation_worker
 Restart=on-failure

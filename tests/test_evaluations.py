@@ -393,6 +393,33 @@ def test_question_failure_does_not_stop_later_questions(db_and_client, monkeypat
     assert next_page['nextCursor'] is None and next_page['items'][0]['id'] != page['items'][0]['id']
 
 
+def test_worker_runs_items_with_bounded_concurrency(db_and_client, monkeypatch):
+    """Run independent questions concurrently without exceeding the configured upstream limit."""
+    factory, client = db_and_client
+    headers, service, body, _ = prepare(factory, client, monkeypatch, question_count=3)
+    path = submit(client, headers, service, body)
+    monkeypatch.setenv('EVALUATION_ITEM_CONCURRENCY', '3')
+    active = 0
+    peak = 0
+    lock = asyncio.Lock()
+
+    async def sender(config, payload, outgoing):
+        nonlocal active, peak
+        async with lock:
+            active += 1
+            peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        async with lock:
+            active -= 1
+        return '완료한 답변'
+
+    asyncio.run(worker.process_one(factory, sender=sender))
+    assert peak == 3
+    data = client.get(path, headers=headers).json()['data']
+    assert data['status'] == 'COMPLETED'
+    assert data['completedQuestions'] == 3 and data['failedQuestions'] == 0
+
+
 def test_criterion_error_keeps_other_criteria_and_answer(ready):
     """Count a model criterion error separately without losing successful answers or grades."""
     factory, client, headers, service, body, _ = ready
