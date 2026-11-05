@@ -10,20 +10,30 @@ from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
+
+
+class PreflightError(ValueError):
+    """An operator-facing message containing only static text and setting names."""
 
 
 def validate_email_settings():
     """Fail before deployment if required email verification settings are absent."""
+    problems = []
     if len(os.environ.get('EMAIL_VERIFICATION_SECRET', '').encode()) < 32:
-        raise ValueError('EMAIL_VERIFICATION_SECRET must be at least 32 bytes')
-    if any(not os.environ.get(name) for name in ('SMTP_HOST', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_FROM')):
-        raise ValueError('SMTP settings are required')
+        problems.append('EMAIL_VERIFICATION_SECRET must be at least 32 bytes')
+    missing = [name for name in ('SMTP_HOST', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_FROM')
+               if not os.environ.get(name)]
+    if missing:
+        problems.append('Missing required settings: ' + ', '.join(missing))
     try:
         port = int(os.environ.get('SMTP_PORT', '587'))
     except ValueError:
-        raise ValueError('Invalid SMTP port') from None
+        port = 0
     if not 1 <= port <= 65535:
-        raise ValueError('Invalid SMTP port')
+        problems.append('SMTP_PORT must be an integer between 1 and 65535')
+    if problems:
+        raise PreflightError('; '.join(problems))
 
 
 def preflight(*, check_email=True):
@@ -32,20 +42,33 @@ def preflight(*, check_email=True):
         validate_email_settings()
     # Fail before stopping the current release if OCR dependencies are missing.
     if not shutil.which("pdftoppm") or not shutil.which("tesseract"):
-        raise ValueError("Install poppler-utils and tesseract-ocr with kor/eng language data")
-    languages = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True, check=True, timeout=5)
-    if not {"kor", "eng"} <= set(languages.stdout.split()):
-        raise ValueError("Install tesseract-ocr-kor and tesseract-ocr-eng")
-    url = make_url(os.environ['DATABASE_URL'])
-    if url.drivername != 'mysql+pymysql' or url.host != '127.0.0.1' or url.database != 'osori':
-        raise ValueError('Expected the local Osori MySQL database')
-    Fernet(os.environ['CONNECTION_ENCRYPTION_KEY'].encode())
-    engine = create_engine(url)
+        raise PreflightError("Install poppler-utils, tesseract-ocr, tesseract-ocr-kor and tesseract-ocr-eng")
     try:
+        languages = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True, check=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        raise PreflightError('Cannot inspect Tesseract languages; check the OCR installation') from None
+    if not {"kor", "eng"} <= set(languages.stdout.split()):
+        raise PreflightError("Install tesseract-ocr-kor and tesseract-ocr-eng")
+    try:
+        url = make_url(os.environ['DATABASE_URL'])
+    except (KeyError, ValueError, ArgumentError):
+        raise PreflightError('DATABASE_URL is missing or invalid') from None
+    if url.drivername != 'mysql+pymysql' or url.host != '127.0.0.1' or url.database != 'osori':
+        raise PreflightError('DATABASE_URL must use mysql+pymysql at 127.0.0.1 with database osori')
+    try:
+        Fernet(os.environ['CONNECTION_ENCRYPTION_KEY'].encode())
+    except (KeyError, ValueError):
+        raise PreflightError('CONNECTION_ENCRYPTION_KEY is missing or invalid; preserve the existing key') from None
+    engine = None
+    try:
+        engine = create_engine(url)
         with engine.connect() as connection:
             connection.execute(text('SELECT 1'))
+    except Exception:
+        raise PreflightError('Database connection check failed; check local MySQL and DATABASE_URL') from None
     finally:
-        engine.dispose()
+        if engine is not None:
+            engine.dispose()
 
 
 def backup(destination):
@@ -65,6 +88,9 @@ def main():
             backup(args.destination)
         elif args.action == 'migrate':
             subprocess.run([sys.executable, '-I', '-m', 'alembic', 'upgrade', 'head'], check=True)
+    except PreflightError as exc:
+        print(f'Deployment {args.action} failed: {exc}.', file=sys.stderr)
+        return 1
     except Exception as exc:
         print(f'Deployment {args.action} failed ({type(exc).__name__}).', file=sys.stderr)
         return 1

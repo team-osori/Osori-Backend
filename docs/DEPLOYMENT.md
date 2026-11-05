@@ -77,6 +77,20 @@ readlink -f /opt/osori-backend/current
 
 환경 파일·SSH 개인 키·DB 덤프 원문을 로그나 채팅에 출력하지 마세요. 배포 실패 후 GitHub 실행 로그와 journal의 오류 종류를 확인합니다. 서버 환경을 수정한 뒤 Actions에서 main 워크플로를 다시 실행할 수 있습니다.
 
+### 사전 검사 실패 복구
+
+사전 검사는 필수 설정 이름과 고정된 안내만 출력하며 환경변수 값이나 DB 드라이버의 예외 원문은 출력하지 않습니다. SMTP 설정 누락·잘못된 포트·OCR 실행 파일/언어팩·DB URL·암호화 키·DB 연결 실패를 구분합니다. 예상하지 못한 예외는 기존처럼 종류만 출력합니다.
+
+OCR 도입 이전부터 운영하던 서버는 다음 패키지를 한 번 설치해야 합니다. 코드 배포는 OS 패키지를 자동 설치하지 않습니다.
+
+```bash
+sudo apt-get update
+sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-kor tesseract-ocr-eng
+tesseract --list-langs  # eng, kor 포함 여부 확인
+```
+
+이메일 설정은 GitHub Secrets가 아닌 `/etc/osori-backend.env`에 입력합니다. 실제 STARTTLS SMTP 계정과 발신 주소를 사용하고, 배포를 통과시키기 위한 임시 값은 넣지 마세요. `SMTP_PORT`는 생략하면 587입니다. 누락된 `EMAIL_VERIFICATION_SECRET`은 충분한 난수로 생성하되 이미 있는 키는 보존합니다. 설정을 준비한 뒤 실패한 릴리스의 `.venv/bin/python -I deploy/manage.py preflight`를 해당 릴리스 디렉터리에서 `osori` 사용자로 실행하면 서비스를 중단하지 않고 확인할 수 있습니다. 통과하면 Actions에서 **Re-run failed jobs**를 실행합니다.
+
 ## 의존성 갱신
 
 pyproject.toml을 변경하면 잠금 파일도 함께 갱신하고 테스트합니다.
