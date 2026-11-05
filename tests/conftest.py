@@ -4,6 +4,7 @@ import os
 os.environ['DATABASE_URL'] = 'sqlite://'
 # A developer's ignored .env must never turn the test suite into paid external calls.
 os.environ['QUESTION_GENERATION_PROVIDER'] = ''
+os.environ['EVALUATION_JUDGE_PROVIDER'] = ''
 
 import pytest
 from fastapi.testclient import TestClient
