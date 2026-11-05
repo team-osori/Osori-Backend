@@ -13,7 +13,7 @@ def test_migration_upgrade_and_downgrade(tmp_path):
     env = {**os.environ, 'DATABASE_URL': f'sqlite:///{db_path}'}
     subprocess.run([sys.executable, '-m', 'alembic', 'upgrade', 'head'], cwd=root, env=env, check=True)
     engine = create_engine(env['DATABASE_URL'])
-    assert {'users', 'auth_sessions', 'auth_rate_windows', 'used_refresh_tokens', 'projects', 'services'} <= set(inspect(engine).get_table_names())
+    assert {'users', 'auth_sessions', 'auth_rate_windows', 'used_refresh_tokens', 'projects', 'services', 'policies', 'policy_versions', 'testsets', 'testset_versions', 'test_questions', 'question_generation_requests'} <= set(inspect(engine).get_table_names())
     subprocess.run([sys.executable, '-m', 'alembic', 'downgrade', 'base'], cwd=root, env=env, check=True)
     assert 'users' not in inspect(engine).get_table_names()
     engine.dispose()
