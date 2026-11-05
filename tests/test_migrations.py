@@ -70,6 +70,7 @@ def test_policy_upgrade_preserves_existing_prompt_data(tmp_path):
 
 
 def test_email_migration_preserves_legacy_identity_and_refuses_lossy_downgrade(tmp_path):
+    """Keep old account ownership and prevent dropping populated email addresses."""
     from sqlalchemy import text
     root = Path(__file__).resolve().parents[1]
     env = {**os.environ, 'DATABASE_URL': f'sqlite:///{tmp_path / "legacy-email.db"}'}

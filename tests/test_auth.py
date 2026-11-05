@@ -225,6 +225,7 @@ def test_absolute_session_expiry_and_refresh_budget(db_and_client, monkeypatch):
 
 
 def test_email_validation_and_legacy_id_contract(db_and_client):
+    """Reject invalid identities and normalize valid email addresses."""
     _, client = db_and_client
     password = 'secure-password-123'
     for email in ('a..b@example.com', '.a@example.com', 'user@-example.com', 'user@example', 'u ser@example.com', '사용자@example.com'):

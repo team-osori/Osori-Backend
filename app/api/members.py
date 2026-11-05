@@ -15,6 +15,7 @@ router = APIRouter(prefix='/api', tags=['members'], responses=ERROR_RESPONSES)
 
 
 def member_data(user, row=None):
+    """Serialize a project owner, member, or pending invite."""
     return {'userId': user.id, 'name': user.name,
         'role': row.role if row else 'admin', 'status': row.status if row else 'owner',
         'revision': row.revision if row else 1, 'email': user.email, 'lastSeenAt': iso(user.last_seen_at)}
@@ -29,6 +30,7 @@ def list_members(project: OwnedProject, db: Db):
 
 @router.post('/projects/{projectId}/invitations', status_code=201, response_model=Data[InvitationOut])
 def invite(body: InvitationCreate, project: AdminProject, user: CurrentUser, db: Db):
+    """Invite an existing email account while enforcing membership limits."""
     db.execute(select(Project.id).where(Project.id == project.id).with_for_update())
     target = db.scalar(select(User).where(User.email == body.email))
     if target is None:

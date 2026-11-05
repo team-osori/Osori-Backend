@@ -6,6 +6,7 @@ from test_projects import register
 
 
 def test_project_invitation_accept_roles_and_revocation(db_and_client):
+    """Exercise email invitations, access changes, and member removal."""
     factory, client = db_and_client
     owner = register(client, 'member_owner')
     member = register(client, 'member_user')
@@ -50,6 +51,7 @@ def test_project_invitation_accept_roles_and_revocation(db_and_client):
 
 
 def test_invitations_are_hidden_after_project_deleted(db_and_client):
+    """Hide pending invitations after a project is deleted."""
     _, client = db_and_client
     owner = register(client, 'trash_owner')
     member = register(client, 'trash_member')
