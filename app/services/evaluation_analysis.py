@@ -154,6 +154,25 @@ def item_analysis(run, item, reviews=None, answer_reviews=None):
     return result
 
 
+def inferred_prompt_hypothesis(decision, requirement, context):
+    """A failed condition always gets a hypothesis to check first.
+
+    The answer was judged against the policy and still missed the condition, so the first
+    place to look is the prompt: it did not instruct the bot to apply this rule or procedure.
+    """
+    if decision.get('status') != 'judged' or decision.get('verdict') != 'fail' or not context.get('available'):
+        return None
+    refs = [ref for ref in decision.get('evidence_refs') or [] if ref.get('evidence_id')]
+    if not refs:
+        return None
+    issue = decision.get('issue') or {}
+    missing = '; '.join(issue.get('missingGuidance') or [])
+    target = requirement or missing or '이 조건'
+    reason = (f"프롬프트에 '{target}'을(를) 지키거나 확인 절차를 안내하라는 지시가 없어, 챗봇이 주어진 정보만으로 단정했을 가능성이 큽니다. "
+              f"{decision.get('reason') or ''}").strip()[:2000]
+    return {'area': 'PROMPT', 'reason': reason, 'evidenceRefs': refs[:20], 'promptQuote': None, 'reasonMarks': []}
+
+
 def cause_analysis(inputs, question, name, side):
     """Keep observable input/output facts separate from unproven causal attribution."""
     documents = (side or {}).get('evidence', {}).get('documents')
@@ -179,8 +198,11 @@ def cause_analysis(inputs, question, name, side):
     elif not facts['promptApplicationVerified']:
         limitations.append('PROMPT_APPLICATION_UNVERIFIED')
     hypotheses = []
+    requirements = {c['id']: c.get('requirement') or c.get('description') for c in question.get('expectedConditions', [])}
     for decision in (side or {}).get('conditionResults', []):
         hypothesis = (decision.get('issue') or {}).get('hypothesis')
+        if not hypothesis:
+            hypothesis = inferred_prompt_hypothesis(decision, requirements.get(decision.get('conditionId')), context)
         if not hypothesis:
             continue
         if hypothesis['area'] == 'RETRIEVAL' and documents is None:

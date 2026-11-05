@@ -218,8 +218,37 @@ class Generate(Revision):
         return self
 
 
+class GeneratedCondition(Input):
+    description: Text
+    kind: Literal['required', 'forbidden'] = 'required'
+    category: Literal['retrieval', 'grounding', 'response', 'policy'] = 'policy'
+    ruleKeys: Annotated[list[Id], Field(min_length=1, max_length=100)]
+    # Accepted only for legacy test adapters; generation_schema removes server-owned fields.
+    policyVersionId: Id | None = None
+    evidenceQuote: Annotated[str | None, StringConstraints(min_length=1, max_length=10000)] = None
+
+
+class GeneratedQuestion(Input):
+    question: Text
+    expectedBehavior: Text | None = None
+    modelAnswer: Text | None = None
+    forbiddenBehaviors: Annotated[list[Text], Field(max_length=20)] = []
+    ruleKeys: Annotated[list[Id], Field(min_length=1, max_length=100)]
+    # Accepted only for legacy test adapters; generation_schema removes server-owned fields.
+    policyVersionId: Id | None = None
+    evidenceQuote: Annotated[str | None, StringConstraints(min_length=1, max_length=10000)] = None
+    category: QuestionCategory = 'normal'
+    expectedConditions: Annotated[list[GeneratedCondition], Field(min_length=1, max_length=30)]
+
+    @model_validator(mode='after')
+    def answer_is_present(self):
+        if self.expectedBehavior is None and self.modelAnswer is None:
+            raise ValueError('기대 행동 또는 모범 답안이 필요합니다.')
+        return self
+
+
 class GeneratedQuestions(Input):
-    questions: Annotated[list[QuestionBody], Field(min_length=1, max_length=50)]
+    questions: Annotated[list[GeneratedQuestion], Field(min_length=1, max_length=50)]
 
 
 class PolicyOut(BaseModel):

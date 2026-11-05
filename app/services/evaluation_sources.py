@@ -16,8 +16,10 @@ def policy_evidence(policy, quote):
             break
         indices.add(matches[0])
         offset = content.find(quote, offset + 1)
+    chunk_index = next(iter(indices)) if len(indices) == 1 else None
+    page = next((chunk.get('pageNumber') for chunk in document.get('chunks', []) if chunk['index'] == chunk_index), None)
     return {'policyTitle': policy.get('policyTitle'), 'fileName': document.get('filename'),
-            'chunkIndex': next(iter(indices)) if len(indices) == 1 else None}
+            'chunkIndex': chunk_index, 'pageNumber': page}
 
 
 def prompt_context(inputs, name):

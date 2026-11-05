@@ -10,7 +10,7 @@ from sqlalchemy import and_, or_, select, update
 from app.core.errors import ApiError
 from app.core.cursors import cursor_id, cursor_integer, cursor_time, decode_cursor
 from app.models.policy import Policy, PolicyVersion, QuestionHistory, TestQuestion, TestSet, TestSetVersion
-from app.schemas.policy import QuestionBody
+from app.schemas.policy import GeneratedQuestion, QuestionBody
 from app.services.auth import now
 
 
@@ -101,6 +101,72 @@ def source_quote(quote, content, *, normalize_whitespace=False):
     if match and len(match.group()) <= 10000:
         return match.group()
     return quote
+
+
+MAX_GENERATED_FORBIDDEN = 20
+MAX_GENERATED_REQUIRED_CHARS = 2000
+
+
+def hydrate_generated_question(sources, question: GeneratedQuestion) -> QuestionBody:
+    """Attach immutable policy identities and verbatim evidence to a semantic model draft.
+
+    Model slips are repaired instead of failing the batch: unknown rule keys are dropped,
+    a condition with no real rule is dropped, and limits are trimmed. The question is
+    rejected only when no required condition is left that cites a real rule.
+    """
+    rule_maps = [(source, {rule['key']: rule for rule in source.rules}) for source in sources]
+
+    def pick(rule_keys, prefer=None):
+        keys = list(dict.fromkeys(rule_keys))
+        best = None
+        for source, rules in rule_maps:
+            kept = [key for key in keys if key in rules]
+            rank = (len(kept), source is prefer)
+            if kept and (best is None or rank > best[0]):
+                best = (rank, source, rules, kept)
+        return None if best is None else best[1:]
+
+    primary = pick(question.ruleKeys)
+    conditions, required_chars = [], 0
+    for condition in question.expectedConditions:
+        found = pick(condition.ruleKeys, prefer=primary[0] if primary else None)
+        if found is None:
+            continue
+        source, rules, kept = found
+        if condition.kind == 'forbidden':
+            if sum(c['kind'] == 'forbidden' for c in conditions) >= MAX_GENERATED_FORBIDDEN:
+                continue
+        else:
+            added = len(condition.description) + (1 if required_chars else 0)
+            if required_chars + added > MAX_GENERATED_REQUIRED_CHARS:
+                continue
+            required_chars += added
+        conditions.append({
+            'description': condition.description,
+            'kind': condition.kind,
+            'category': condition.category,
+            'policyVersionId': source.id,
+            'ruleKeys': kept,
+            'evidenceQuote': rules[kept[0]]['sourceQuote'],
+        })
+    if not any(condition['kind'] == 'required' for condition in conditions):
+        raise ApiError(400, 'INVALID_POLICY_EVIDENCE', '생성 문항의 규칙 key를 정책에서 확인할 수 없습니다.')
+    if primary is None:
+        # The question-level keys were all invented; fall back to the first grounded condition.
+        first = next(c for c in conditions if c['kind'] == 'required')
+        primary = pick(first['ruleKeys'])
+    source, rules, kept = primary
+    return QuestionBody(
+        question=question.question,
+        expectedBehavior=question.expectedBehavior or question.modelAnswer,
+        modelAnswer=question.modelAnswer,
+        forbiddenBehaviors=question.forbiddenBehaviors[:MAX_GENERATED_FORBIDDEN],
+        policyVersionId=source.id,
+        ruleKeys=kept,
+        evidenceQuote=rules[kept[0]]['sourceQuote'],
+        category=question.category,
+        expectedConditions=conditions,
+    )
 
 
 def repair_generated_evidence(db, project_id, version, body: QuestionBody) -> QuestionBody:

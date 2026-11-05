@@ -2,7 +2,7 @@
 from copy import deepcopy
 
 from app.models.policy import TestSetVersion as Version
-from tests.test_policy_testsets import setup
+from tests.test_policy_testsets import generated_question, setup
 from test_evaluations import ready  # noqa: F401 - existing isolated evaluation setup
 
 
@@ -145,13 +145,12 @@ def test_generation_exact_type_counts_replay_and_wrong_distribution(db_and_clien
 
     class Generator:
         wrong = False
-        def generate(self, *, policies, count, category_counts):
-            calls.append(category_counts)
-            assert count == 5
-            categories = [key for key, value in category_counts.items() for _ in range(value)]
+        def generate(self, *, policies, count, categories):
+            calls.append((count, categories))
             if self.wrong:
-                categories[0] = 'policy_trap'
-            return {'questions': [{**question, 'category': category, 'question': f'질문 {i}'} for i, category in enumerate(categories)]}
+                categories = ['exception']
+            return {'questions': [{**generated_question(question), 'category': category, 'question': f'질문 {len(calls)}-{i}'}
+                                  for i, category in enumerate(categories * count)]}
 
     generator = Generator()
     app.dependency_overrides[get_question_generator] = lambda: generator
@@ -163,14 +162,18 @@ def test_generation_exact_type_counts_replay_and_wrong_distribution(db_and_clien
         assert client.post(path + '/questions/generate', json={**body, **invalid}, headers=h).status_code == 400
     generator.wrong = True
     bad = client.post(path + '/questions/generate', json=body, headers=h)
-    assert bad.status_code == 502 and bad.json()['error']['code'] == 'GENERATION_CATEGORY_COUNT_MISMATCH'
+    assert bad.status_code == 502 and bad.json()['error']['code'] == 'GENERATION_CATEGORY_MISMATCH'
     assert client.get(path, headers=headers).json()['data']['revision'] == 1
+    # Every refill round was tried (one call per category per round) before reporting the failure;
+    # the three 1-question rounds split normal(2) in two.
+    assert len(calls) == 3 * 4 + 3 * 5
+    calls.clear()
     generator.wrong = False
     good = client.post(path + '/questions/generate', json=body, headers=h)
     assert good.status_code == 200, good.text
     assert good.json()['data']['questionCount'] == 5
     assert client.post(path + '/questions/generate', json=body, headers=h).json() == good.json()
-    assert len(calls) == 2
+    assert len(calls) == 4
 
 
 def test_csv_to_confirmed_snapshot_runs_existing_evaluator(ready):

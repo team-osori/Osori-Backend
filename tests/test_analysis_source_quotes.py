@@ -189,8 +189,9 @@ def test_detail_returns_frozen_tooltip_sources_on_every_hypothesis_path(single_r
 def test_policy_chunk_is_returned_only_when_unambiguous(content, chunks, quote, expected):
     policy = {'content': content, 'sourceDocument': {'filename': 'source.pdf', 'chunks': [
         {'index': i, 'startOffset': start, 'endOffset': end} for i, (start, end) in enumerate(chunks, 1)]}}
-    assert policy_evidence(policy, quote) == {'policyTitle': None, 'fileName': 'source.pdf', 'chunkIndex': expected}
-    assert policy_evidence({}, quote) == {'policyTitle': None, 'fileName': None, 'chunkIndex': None}
+    found = policy_evidence(policy, quote)
+    assert {k: found[k] for k in ('policyTitle', 'fileName', 'chunkIndex')} == {'policyTitle': None, 'fileName': 'source.pdf', 'chunkIndex': expected}
+    assert policy_evidence({}, quote) == {'policyTitle': None, 'fileName': None, 'chunkIndex': None, 'pageNumber': None}
 
 
 @pytest.mark.parametrize('value', [None, 0, 7])

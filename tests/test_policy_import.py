@@ -8,7 +8,7 @@ from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 
 from app.main import app
 from app.core.errors import ApiError
-from app.services.policy_extraction import get_policy_extractor, OpenAIPolicyExtractor
+from app.services.policy_extraction import extract_rules, get_policy_extractor, OpenAIPolicyExtractor
 from app.services.question_generation import OpenAIQuestionGenerator
 from app.services.policy_documents import extract_document, MAX_FILE_BYTES
 from test_projects import register
@@ -80,6 +80,19 @@ def test_content_only_draft_and_invalid_evidence_do_not_persist(db_and_client):
     assert client.get(path, headers=headers).json()['data']['items'] == []
 
 
+def test_extraction_keeps_only_rules_with_verifiable_evidence():
+    class MixedExtractor:
+        def extract(self, content):
+            return {'rules': [
+                {'key': 'valid', 'description': '검증 가능한 규칙', 'sourceQuote': '24시간 전 취소 가능'},
+                {'key': 'invalid', 'description': '검증할 수 없는 규칙', 'sourceQuote': '없는 비공개 규칙'},
+            ]}
+
+    rules = extract_rules(MixedExtractor(), '항공권은 24시간 전 취소 가능')
+    assert [rule.key for rule in rules] == ['valid']
+    assert rules[0].sourceQuote == '24시간 전 취소 가능'
+
+
 def test_upload_auth_type_and_resource_limits(db_and_client):
     _, client = db_and_client
     headers, path, extractor = prepare(client)
@@ -120,7 +133,7 @@ def test_model_request_uses_existing_transport_without_paid_call(monkeypatch):
         assert json.loads(body['input'][0]['content'])['content'] == 'Policy'
         return {'status': 'completed', 'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': json.dumps({'rules': [{'key': 'r', 'description': 'Rule', 'sourceQuote': 'Policy'}]})}]}]}
     monkeypatch.setattr(transport, '_request', request)
-    assert OpenAIPolicyExtractor(transport).extract('Policy').rules[0].key == 'r'
+    assert OpenAIPolicyExtractor(transport).extract('Policy')['rules'][0]['key'] == 'r'
 
 
 def test_bedrock_extraction_reuses_current_provider_without_live_call(monkeypatch):
@@ -136,3 +149,29 @@ def test_bedrock_extraction_reuses_current_provider_without_live_call(monkeypatc
     extractor = get_policy_extractor()
     assert isinstance(extractor, BedrockPolicyExtractor)
     assert extract_rules(extractor, 'Policy')[0].sourceQuote == 'Policy'
+
+
+def test_extraction_repairs_or_drops_single_bad_rules_and_retries_sections():
+    """One bad key, duplicate key or invented quote never fails the whole import."""
+    from app.services.policy_extraction import extract_rules
+    content = ('환불은 구매 후 7일 이내에 가능합니다.\n' * 1) + ('가' * 7000) + '\n배송비는 고객이 부담합니다.'
+    calls = []
+
+    class Extractor:
+        def extract(self, section):
+            calls.append(len(section))
+            if len(calls) == 1:
+                raise ApiError(502, 'POLICY_EXTRACTION_INCOMPLETE', 'cut')
+            rules = []
+            if '환불' in section:
+                rules += [{'key': '환불 규칙', 'description': '환불 기한', 'sourceQuote': '환불은 구매 후 7일 이내에 가능합니다.'},
+                          {'key': 'x', 'description': '없는 규칙', 'sourceQuote': '존재하지 않는 문장입니다.'}]
+            if '배송비' in section:
+                rules += [{'key': 'refund', 'description': '배송비', 'sourceQuote': '배송비는  고객이 부담합니다.'},
+                          {'key': 'refund', 'description': '배송비 중복키', 'sourceQuote': '배송비는 고객이 부담합니다.'}]
+            return {'rules': rules}
+
+    rules = extract_rules(Extractor(), content)
+    assert len(calls) >= 3
+    assert [r.key for r in rules] == ['RULE', 'refund', 'refund_2']
+    assert all(r.sourceQuote in content for r in rules)

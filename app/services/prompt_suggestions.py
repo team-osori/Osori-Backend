@@ -47,22 +47,24 @@ def source_snapshot(db, service_id, body, *, lock=False):
     policies = {p['id']: p['content'] for p in run.inputs['testSet']['policies']}
     evidence = []
     for item in items:
+        # Items without a usable failed condition (call failed, judge error) are skipped, not fatal:
+        # one ungraded answer must not block suggestions for the others.
         if not item.a or item.a['callStatus'] != 'SUCCEEDED':
-            raise ApiError(409, 'NO_FAILED_CONDITION', '성공한 답변의 미충족 조건을 선택하세요.')
+            continue
         detail = item_analysis(run, item, reviews)['a']
         failed = [c for c in detail['conditions'] if c['judgment']
                   and c['judgment']['status'] == 'judged' and c['judgment']['verdict'] == 'fail']
-        if not failed:
-            raise ApiError(409, 'NO_FAILED_CONDITION', '확인된 미충족 조건이 없습니다.')
         for condition in failed:
             source = condition['policyEvidence']
             if not source['quote'] or source['quote'] not in policies.get(source['policyVersionId'], ''):
-                raise ApiError(409, 'INVALID_SUGGESTION_EVIDENCE', '정책 원문 근거를 확인할 수 없습니다.')
+                continue
             issue = next((i for i in detail['issues'] if i['conditionId'] == condition['conditionId']), None)
             evidence.append({'id': f'e{len(evidence) + 1}', 'itemId': item.id, 'questionId': item.question_id,
                 'question': item.input['question'], 'answer': item.a['answer'],
                 'reviewRevision': item.review_revision, 'condition': condition, 'issue': issue,
                 'facts': detail['facts'], 'hypotheses': detail['hypotheses'], 'limitations': detail['limitations']})
+    if not evidence:
+        raise ApiError(409, 'NO_FAILED_CONDITION', '확인된 미충족 조건이 없습니다.')
     return {'promptId': base.prompt_id, 'content': base.content, 'itemIds': body.itemIds,
         'sourceHash': digest({'inputs': run.inputs, 'items': [
             [item.id, item.input, item.a, item.review_revision] for item in items]}),

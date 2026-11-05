@@ -10,10 +10,9 @@ from app.services.question_generation import OpenAIQuestionGenerator, generation
 
 def candidate(category='normal'):
     return {'question': '취소할 수 있나요? ' + category, 'expectedBehavior': '취소 기한을 안내한다.',
-        'forbiddenBehaviors': [], 'policyVersionId': 'policy-v1', 'ruleKeys': ['refund'],
-        'evidenceQuote': '24시간 전까지 취소 가능', 'category': category,
+        'modelAnswer': '취소 기한을 안내한다.', 'forbiddenBehaviors': [], 'ruleKeys': ['refund'], 'category': category,
         'expectedConditions': [{'description': '취소 기한을 안내한다.', 'kind': 'required', 'category': 'policy',
-            'policyVersionId': 'policy-v1', 'ruleKeys': ['refund'], 'evidenceQuote': '24시간 전까지 취소 가능'}]}
+            'ruleKeys': ['refund']}]}
 
 
 def completed(questions):
@@ -35,16 +34,14 @@ def test_responses_request_and_structured_batch(monkeypatch):
     monkeypatch.setattr(generator, '_request', request)
     result = generator.generate(policies=[{'content': '정책 데이터'}], count=3)
     assert len(result.questions) == 3 and result.questions[2].category == 'boundary'
-    assert all(c.id is None for q in result.questions for c in q.expectedConditions)
     schema = generation_schema()
-    assert 'id' not in schema['$defs']['ExpectedCondition']['properties']
+    assert 'policyVersionId' not in schema['$defs']['GeneratedQuestion']['properties']
+    assert 'evidenceQuote' not in schema['$defs']['GeneratedCondition']['properties']
 
 
 @pytest.mark.parametrize('result,code', [
     ({'status': 'incomplete'}, 'GENERATION_INCOMPLETE'),
     ({'status': 'completed', 'output': [{'type': 'message', 'content': [{'type': 'refusal', 'refusal': 'private-data'}]}]}, 'GENERATION_REFUSED'),
-    (completed([candidate('exception')]), 'GENERATION_CATEGORY_MISMATCH'),
-    (completed([candidate(), candidate()]), 'GENERATION_COUNT_MISMATCH'),
     ({'status': 'completed', 'output': []}, 'GENERATION_SCHEMA_INVALID'),
 ])
 def test_invalid_or_refused_results_are_not_saved(monkeypatch, result, code):
@@ -100,7 +97,7 @@ def test_http_errors_do_not_read_or_expose_provider_body(monkeypatch, status, co
 
     class Session(Response):
         def __init__(self, **kwargs):
-            assert kwargs['trust_env'] is False and kwargs['timeout'].total == 60
+            assert kwargs['trust_env'] is False and kwargs['timeout'].total == 120
         def post(self, url, **kwargs):
             assert url == 'https://api.openai.com/v1/responses'
             assert kwargs['allow_redirects'] is False
@@ -139,7 +136,23 @@ def test_provider_receives_exact_counts_and_validates_distribution(monkeypatch, 
     assert len(result.questions) == 3
     assert observed[0]['categoryCounts'] == counts
     assert observed[0]['categories'] == ['normal', 'missing_document']
+    # Extra drafts of one category are trimmed to its requested count instead of failing the batch.
     questions[1] = {**candidate('normal'), 'question': '두 번째 정상'}
-    with pytest.raises(ApiError) as caught:
-        generator.generate(policies=[], count=3, category_counts=counts)
-    assert caught.value.code == 'GENERATION_CATEGORY_COUNT_MISMATCH'
+    trimmed = generator.generate(policies=[], count=3, category_counts=counts)
+    assert [q.category for q in trimmed.questions].count('normal') == counts['normal']
+    assert len(trimmed.questions) <= 3
+
+
+@pytest.mark.parametrize('result,expected', [
+    (completed([candidate('exception')]), 0),
+    (completed([candidate(), candidate()]), 1),
+    (completed([candidate(), {**candidate(), 'question': '다른 질문'}, {'question': 'broken'}]), 1),
+])
+def test_stray_extra_or_malformed_drafts_are_trimmed_not_fatal(monkeypatch, result, expected):
+    generator = OpenAIQuestionGenerator('private-data')
+
+    async def request(_):
+        return result
+
+    monkeypatch.setattr(generator, '_request', request)
+    assert len(generator.generate(policies=[], count=1, categories=['normal']).questions) == expected

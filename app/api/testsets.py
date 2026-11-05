@@ -1,6 +1,8 @@
 import hashlib
+import inspect
 import json
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Annotated
 
@@ -17,12 +19,26 @@ from app.schemas.responses import Data, Page, ERROR_RESPONSES
 from app.schemas.policy import TestSetOut, TestSetDetail, TestSetVersionOut, TestSetVersionSummary, QuestionOut, QuestionHistoryOut, EvaluationSnapshot
 from app.services import policy as service
 from app.services.auth import now
-from app.services.question_generation import QuestionGenerator, get_question_generator
+from app.services.question_generation import (QuestionGenerator, get_question_generator, normalize_question,
+    parse_generated_questions)
 from app.services.rate_limit import check_rate_limit
 from app.services.question_import import CsvValidationError, MAX_CSV_BYTES, parse_questions
 
 router = APIRouter(prefix='/api/projects/{projectId}/testsets', tags=['testsets'], responses=ERROR_RESPONSES)
 MAX_QUESTIONS = 200
+# Each round asks for at most this many questions per model call. Small calls stay far from
+# output-token and timeout limits; later rounds shrink further and only refill what is missing.
+GENERATION_ROUNDS = (5, 3, 2, 1, 1, 1)
+GENERATION_WORKERS = 4
+# Retrying cannot fix these, so they surface immediately instead of after every round.
+FATAL_GENERATION_ERRORS = {'GENERATION_NOT_CONFIGURED', 'GENERATION_AUTH_FAILED',
+                           'GENERATION_INPUT_TOO_LARGE', 'GENERATION_INVALID_REQUEST'}
+DROP_ERRORS = {
+    'schema': ('GENERATION_SCHEMA_INVALID', '생성 결과의 형식을 확인할 수 없습니다.'),
+    'category': ('GENERATION_CATEGORY_MISMATCH', '생성된 문항 유형이 요청과 다릅니다.'),
+    'evidence': ('GENERATION_EVIDENCE_INVALID', '생성된 문항의 정책 참조 또는 원문 근거가 유효하지 않습니다.'),
+    'conditions': ('GENERATION_CONDITIONS_INVALID', '생성된 기대 조건을 확인할 수 없습니다.'),
+}
 
 
 def resolve(db, project_id, testset_id, version_id):
@@ -36,6 +52,115 @@ def ensure_capacity(db, version_id, extra):
     count = len(db.scalars(select(TestQuestion.id).where(TestQuestion.testset_version_id == version_id).with_for_update()).all())
     if count + extra > MAX_QUESTIONS:
         raise ApiError(400, 'QUESTION_LIMIT_EXCEEDED', '테스트셋 버전은 최대 200문항입니다.')
+
+
+def requested_category_counts(body):
+    if body.categoryCounts is not None:
+        return {category: count for category, count in body.categoryCounts.items() if count}
+    categories = body.categories or ['normal', 'exception', 'boundary'][:min(body.count, 3)]
+    counts = {category: 1 for category in categories}
+    for index in range(body.count - len(categories)):
+        category = categories[index % len(categories)]
+        counts[category] += 1
+    return counts
+
+
+def accepts_hints(generator):
+    """Older/test adapters take only (policies, count, categories); never pass them extra hints."""
+    try:
+        params = inspect.signature(generator.generate).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == 'hints' or p.kind is p.VAR_KEYWORD for p in params)
+
+
+def generation_jobs(targets, accepted, chunk, rule_keys, round_index):
+    """Split each category's shortfall into small calls, each focused on a different rule slice."""
+    jobs = []
+    for category, target in targets.items():
+        remaining = target - len(accepted[category])
+        parts = -(-remaining // chunk) if remaining > 0 else 0
+        keys = rule_keys[round_index % len(rule_keys):] + rule_keys[:round_index % len(rule_keys)] if rule_keys else []
+        for index in range(parts):
+            size = min(chunk, remaining - index * chunk)
+            focus = keys[index::parts] if parts > 1 or round_index else []
+            jobs.append((category, size, focus[:25]))
+    return jobs
+
+
+def generate_payloads(db, project_id, version, sources, generator, targets):
+    """Collect exactly the requested drafts; drop and refill bad items instead of failing the batch."""
+    policies = [service.policy_version_data(p) for p in sources]
+    rule_keys = [rule['key'] for source in sources for rule in source.rules]
+    hints_ok = accepts_hints(generator)
+    accepted = {category: [] for category in targets}
+    seen = set()
+    drops, last_error = Counter(), None
+
+    def call(category, size, focus, avoid, ask):
+        kwargs = {'policies': policies, 'count': ask, 'categories': [category]}
+        if hints_ok:
+            kwargs['hints'] = {'focusRuleKeys': focus, 'avoidQuestions': avoid}
+        try:
+            return generator.generate(**kwargs)
+        except Exception as exc:  # one failed chunk must not discard the other chunks
+            return exc
+
+    for round_index, chunk in enumerate(GENERATION_ROUNDS):
+        jobs = generation_jobs(targets, accepted, chunk, rule_keys, round_index)
+        if not jobs:
+            break
+        # Show the model everything accepted so far so refills do not re-propose earlier questions.
+        avoid = [text for questions in accepted.values() for text, _ in questions]
+        with ThreadPoolExecutor(max_workers=min(GENERATION_WORKERS, len(jobs))) as pool:
+            # Refill rounds ask for one spare draft; extras are trimmed, so a dropped draft is still covered.
+            spare = 1 if round_index else 0
+            results = list(pool.map(lambda job: call(*job, avoid, job[1] + spare), jobs))
+        for (category, size, _), result in zip(jobs, results):
+            if isinstance(result, Exception):
+                # Incomplete/timeout/throttled chunks are refilled by the next, smaller round.
+                if isinstance(result, ApiError) and result.code in FATAL_GENERATION_ERRORS:
+                    raise result
+                last_error = result
+                continue
+            try:
+                questions, dropped = parse_generated_questions(result)
+            except (ValueError, TypeError, AttributeError):
+                drops['schema'] += 1
+                continue
+            drops['schema'] += dropped
+            taken = 0
+            for question in questions:
+                key = normalize_question(question.question)
+                if question.category != category:
+                    drops['category'] += 1
+                    continue
+                if key in seen or not question.expectedConditions or taken >= size \
+                        or len(accepted[category]) >= targets[category]:
+                    continue
+                try:
+                    hydrated = service.hydrate_generated_question(sources, question)
+                    payload = service.question_payload(db, project_id, version, hydrated, generated=True)
+                except ApiError as exc:
+                    drops['conditions' if exc.code in ('INVALID_CONDITION_ID', 'INVALID_EXPECTED_CONDITIONS')
+                          else 'evidence'] += 1
+                    continue
+                except (ValidationError, ValueError):
+                    drops['schema'] += 1
+                    continue
+                seen.add(key)
+                taken += 1
+                accepted[category].append((question.question, payload))
+    payloads = [payload for questions in accepted.values() for _, payload in questions]
+    if payloads:
+        # A shortfall after every refill round still keeps the usable drafts for review.
+        return payloads
+    if drops:
+        code, message = DROP_ERRORS[drops.most_common(1)[0][0]]
+        raise ApiError(502, code, message)
+    if last_error is not None:
+        raise last_error
+    raise ApiError(502, 'GENERATION_SCHEMA_INVALID', '생성 결과의 형식을 확인할 수 없습니다.')
 
 
 def question_row(db, version_id, question_id):
@@ -304,24 +429,7 @@ def generate(testSetId: ResourceId, versionId: ResourceId, body: Generate, proje
     ensure_capacity(db, version.id, body.count)
     sources = service.policy_versions(db, project.id, version.policy_version_ids, allow_deleted=True)
     try:
-        options = {'categories': body.categories} if body.categories is not None else {}
-        if body.categoryCounts is not None:
-            options['category_counts'] = body.categoryCounts
-        generated = GeneratedQuestions.model_validate(generator.generate(policies=[service.policy_version_data(p) for p in sources], count=body.count, **options))
-        if len(generated.questions) != body.count:
-            raise ApiError(502, 'GENERATION_COUNT_MISMATCH', '생성된 문항 수가 요청과 다릅니다.')
-        if body.categories is not None and {q.category for q in generated.questions} != set(body.categories):
-            raise ApiError(502, 'GENERATION_CATEGORY_MISMATCH', '생성된 문항 유형이 요청과 다릅니다.')
-        if body.categoryCounts is not None and Counter(q.category for q in generated.questions) != {k: v for k, v in body.categoryCounts.items() if v}:
-            raise ApiError(502, 'GENERATION_CATEGORY_COUNT_MISMATCH', '생성된 유형별 문항 수가 요청과 다릅니다.')
-        try:
-            payloads = [service.question_payload(db, project.id, version, question, generated=True) for question in generated.questions]
-        except ApiError as exc:
-            if exc.code in ('INVALID_POLICY_REFERENCE', 'INVALID_POLICY_EVIDENCE'):
-                raise ApiError(502, 'GENERATION_EVIDENCE_INVALID', '생성된 문항의 정책 참조 또는 원문 근거가 유효하지 않습니다.') from None
-            if exc.code in ('INVALID_CONDITION_ID', 'INVALID_EXPECTED_CONDITIONS'):
-                raise ApiError(502, 'GENERATION_CONDITIONS_INVALID', '생성된 기대 조건을 확인할 수 없습니다.') from None
-            raise
+        payloads = generate_payloads(db, project.id, version, sources, generator, requested_category_counts(body))
     except ApiError:
         db.rollback()
         raise

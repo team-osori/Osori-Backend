@@ -34,6 +34,14 @@ def setup(client, login='owner'):
     return headers, base, policy, source, data, version_path, question
 
 
+def generated_question(question, suffix=''):
+    return {'question': question['question'] + suffix, 'expectedBehavior': question['expectedBehavior'],
+        'modelAnswer': question['expectedBehavior'], 'forbiddenBehaviors': question['forbiddenBehaviors'],
+        'ruleKeys': question['ruleKeys'], 'category': question.get('category', 'normal'),
+        'expectedConditions': [{'description': question['expectedBehavior'], 'kind': 'required', 'category': 'policy',
+                                'ruleKeys': question['ruleKeys']}]}
+
+
 def test_human_review_confirmation_and_immutable_evidence(db_and_client):
     """Confirmation freezes reviewed inputs even after a source edit or logical deletion."""
     _, client = db_and_client
@@ -107,11 +115,11 @@ class FakeGenerator:
         self.question = question
         self.calls = 0
 
-    def generate(self, *, policies, count):
+    def generate(self, *, policies, count, **kwargs):
         """Return structured candidates using the provided policy version."""
         self.calls += 1
         assert policies[0]['id'] == self.question['policyVersionId']
-        return {'questions': [deepcopy(self.question) for _ in range(count)]}
+        return {'questions': [generated_question(self.question, f' ({index + 1})') for index in range(count)]}
 
 
 def test_generation_is_unconfigured_and_fake_adapter_is_only_for_tests(db_and_client):
@@ -124,14 +132,14 @@ def test_generation_is_unconfigured_and_fake_adapter_is_only_for_tests(db_and_cl
     assert client.get(path, headers=headers).json()['data']['revision'] == 1
     fake = FakeGenerator(question)
     app.dependency_overrides[get_question_generator] = lambda: fake
-    body = {'expectedRevision': 1, 'count': 2}
+    body = {'expectedRevision': 1, 'count': 2, 'categoryCounts': {'normal': 2}}
     response = client.post(path + '/questions/generate', json=body, headers=h)
     assert response.status_code == 200, response.text
     assert len(response.json()['data']['questions']) == 2
     assert all(q['reviewStatus'] == 'pending' for q in response.json()['data']['questions'])
     assert client.post(path + '/questions/generate', json=body, headers=h).json() == response.json()
     assert fake.calls == 1
-    assert client.post(path + '/questions/generate', json={**body, 'count': 1}, headers=h).status_code == 409
+    assert client.post(path + '/questions/generate', json={**body, 'count': 1, 'categoryCounts': {'normal': 1}}, headers=h).status_code == 409
     assert client.post(path + '/confirm', json={'expectedRevision': 2}, headers=headers).status_code == 409
 
 
@@ -208,19 +216,15 @@ def test_rejected_questions_capacity_and_api_contract(db_and_client, monkeypatch
     assert cors.status_code == 200
 
 
-def test_generation_repairs_policy_id_and_joined_quotes(db_and_client):
-    """Model slips seen with Bedrock Haiku: policyId instead of the version ID and quotes joined across places."""
+def test_generation_hydrates_server_owned_policy_evidence(db_and_client):
+    """The server, not the model, supplies policy versions and verbatim source quotes."""
     _, client = db_and_client
     headers, _, _, source, _, path, question = setup(client)
-    slipped = {**question, 'policyVersionId': source['policy']['id'], 'ruleKeys': ['refund', 'MADE_UP_RULE'],
-               # 원문의 두 문장을 순서를 바꿔 이어 붙임 → 원문의 연속 구간은 아니지만 문장은 모두 원문에 있음
-               'evidenceQuote': '임의 보상은 금지합니다. 예약 취소는 출발 24시간 전까지 가능합니다.',
-               'expectedConditions': [{'description': '취소 기한을 안내한다.', 'policyVersionId': source['policy']['id'],
-                                       'ruleKeys': ['refund'], 'evidenceQuote': '예약 취소는 출발 24시간 전까지 가능합니다.'}]}
+    semantic = generated_question(question)
 
     class Slipping:
-        def generate(self, *, policies, count):
-            return {'questions': [deepcopy(slipped) for _ in range(count)]}
+        def generate(self, *, policies, count, **kwargs):
+            return {'questions': [deepcopy(semantic) for _ in range(count)]}
 
     app.dependency_overrides[get_question_generator] = lambda: Slipping()
     response = client.post(path + '/questions/generate', json={'expectedRevision': 1, 'count': 1},
@@ -228,7 +232,7 @@ def test_generation_repairs_policy_id_and_joined_quotes(db_and_client):
     assert response.status_code == 200, response.text
     saved = response.json()['data']['questions'][0]
     assert saved['policyVersionId'] == source['version']['id']
-    assert saved['evidenceQuote'] == '임의 보상은 금지합니다.'
+    assert saved['evidenceQuote'] == '예약 취소는 출발 24시간 전까지 가능합니다.'
     assert saved['ruleKeys'] == ['refund']
     assert saved['expectedConditions'][0]['policyVersionId'] == source['version']['id']
     assert saved['expectedConditions'][0]['evidenceQuote'] == '예약 취소는 출발 24시간 전까지 가능합니다.'
@@ -250,8 +254,11 @@ def test_generation_still_rejects_only_unknown_rules(db_and_client):
     headers, _, _, _, _, path, question = setup(client)
 
     class Unknown:
-        def generate(self, *, policies, count):
-            return {'questions': [{**question, 'ruleKeys': ['MADE_UP_RULE']}]}
+        def generate(self, *, policies, count, **kwargs):
+            generated = generated_question(question)
+            generated['ruleKeys'] = ['MADE_UP_RULE']
+            generated['expectedConditions'][0]['ruleKeys'] = ['MADE_UP_RULE']
+            return {'questions': [generated]}
 
     app.dependency_overrides[get_question_generator] = lambda: Unknown()
     response = client.post(path + '/questions/generate', json={'expectedRevision': 1, 'count': 1},

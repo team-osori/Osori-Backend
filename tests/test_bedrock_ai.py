@@ -62,7 +62,7 @@ def test_bedrock_selection_needs_no_personal_key_and_keeps_region_and_model(monk
 def test_real_sdk_converse_schema_generates_validated_drafts(stubbed):
     stubbed.add_response('converse', tool_response({'questions': [candidate()]}))
     generated = BedrockQuestionGenerator(runtime.DEFAULT_MODEL, runtime.DEFAULT_REGION).generate(policies=[], count=1)
-    assert len(generated.questions) == 1 and generated.questions[0].expectedConditions[0].id is None
+    assert len(generated.questions) == 1 and generated.questions[0].expectedConditions[0].ruleKeys == ['refund']
 
 
 def test_bedrock_transport_uses_iam_chain_with_fixed_timeouts_and_no_retries(monkeypatch):
@@ -108,29 +108,32 @@ def test_incomplete_or_refused_output_never_becomes_a_generated_question(stubbed
     assert error.value.code == code
 
 
-@pytest.mark.parametrize('output,code', [
-    (tool_response({'questions': [candidate()]}, name='unrequested-tool'), 'GENERATION_SCHEMA_INVALID'),
-    (tool_response({'questions': [{**candidate(), 'expectedConditions': [
-        {**candidate()['expectedConditions'][0], 'id': 'model-invented-id'}]}]}), 'GENERATION_CONDITIONS_INVALID'),
-])
-def test_wrong_tool_and_forged_question_ids_are_rejected(stubbed, output, code):
+def test_wrong_tool_is_rejected(stubbed):
+    output = tool_response({'questions': [candidate()]}, name='unrequested-tool')
     stubbed.add_response('converse', output)
     with pytest.raises(ApiError) as error:
         BedrockQuestionGenerator(runtime.DEFAULT_MODEL, runtime.DEFAULT_REGION).generate(policies=[], count=1)
-    assert error.value.code == code
+    assert error.value.code == 'GENERATION_SCHEMA_INVALID'
 
 
-@pytest.mark.parametrize('questions,count,code', [
-    ([candidate()], 2, 'GENERATION_COUNT_MISMATCH'),
-    ([candidate('exception')], 1, 'GENERATION_CATEGORY_MISMATCH'),
-    ([candidate(), candidate()], 2, 'GENERATION_DUPLICATE_QUESTIONS'),
+@pytest.mark.parametrize('questions,count,expected', [
+    ([candidate('exception')], 1, 0),
+    ([candidate(), candidate()], 2, 1),
+    ([candidate(), {**candidate(), 'question': '다른 질문'}], 1, 1),
 ])
-def test_bedrock_preserves_main_generation_diagnostics(stubbed, questions, count, code):
+def test_bedrock_trims_invalid_generation_batches(stubbed, questions, count, expected):
+    """Off-category, duplicate and extra drafts are dropped; the endpoint refills the shortfall."""
     stubbed.add_response('converse', tool_response({'questions': questions}))
-    with pytest.raises(ApiError) as error:
-        BedrockQuestionGenerator(runtime.DEFAULT_MODEL, runtime.DEFAULT_REGION).generate(
-            policies=[], count=count, categories=['normal'])
-    assert error.value.code == code
+    generated = BedrockQuestionGenerator(runtime.DEFAULT_MODEL, runtime.DEFAULT_REGION).generate(
+        policies=[], count=count, categories=['normal'])
+    assert len(generated.questions) == expected
+
+
+def test_bedrock_allows_a_short_batch_for_endpoint_retry(stubbed):
+    stubbed.add_response('converse', tool_response({'questions': [candidate()]}))
+    generated = BedrockQuestionGenerator(runtime.DEFAULT_MODEL, runtime.DEFAULT_REGION).generate(
+        policies=[], count=2, categories=['normal'])
+    assert len(generated.questions) == 1
 
 
 def test_oversized_input_does_not_make_a_paid_call(stubbed):

@@ -119,6 +119,7 @@ class PolicyEvidence(BaseModel):
     fileName: str | None = None
     chunkIndex: int | None = Field(default=None,
         description='원문 인용이 하나의 청크로 특정될 때의 1 기반 번호. 미제공·다중 청크·모호한 위치는 null.')
+    pageNumber: int | None = Field(default=None, description='그 청크의 PDF 페이지 번호. 모르면 null.')
 
 
 class AnalysisCondition(BaseModel):

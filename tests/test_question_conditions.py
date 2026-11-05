@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from tests.test_policy_testsets import account, setup
+from tests.test_policy_testsets import account, generated_question, setup
 
 
 @pytest.mark.parametrize('initial_count', [1, 2])
@@ -137,7 +137,8 @@ def test_generation_categories_are_validated_and_failed_calls_are_limited(db_and
     class Generator:
         def generate(self, *, policies, count, categories):
             calls.append(categories)
-            return {'questions': [{**question, 'category': category} for category in categories]}
+            return {'questions': [{**generated_question(question, f' {category}'), 'category': category}
+                                  for category in categories]}
 
     app.dependency_overrides[get_question_generator] = lambda: Generator()
     h = {**headers, 'Idempotency-Key': 'categories'}
@@ -146,10 +147,10 @@ def test_generation_categories_are_validated_and_failed_calls_are_limited(db_and
     body = {'expectedRevision': 1, 'count': 3, 'categories': ['normal', 'exception', 'boundary']}
     result = client.post(path + '/questions/generate', json=body, headers=h)
     assert result.status_code == 200, result.text
-    assert calls == [body['categories']]
+    assert calls == [['normal'], ['exception'], ['boundary']]
     assert len(client.get(path + '/history', headers=headers).json()['data']['items']) == 3
     assert client.post(path + '/questions/generate', json=body, headers=h).json() == result.json()
-    assert len(calls) == 1
+    assert len(calls) == 3
     for i in range(8):
         response = client.post(path + '/questions/generate', json={**body, 'expectedRevision': 1},
             headers={**headers, 'Idempotency-Key': str(i)})
