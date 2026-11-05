@@ -77,13 +77,13 @@ JSON 쓰기 요청은 `Content-Type: application/json`, 최대 1MiB입니다. �
 
 | 상태 | 주요 코드 |
 | --- | --- |
-| 400 | `VALIDATION_ERROR`, `INVALID_CURSOR` |
+| 400 | `VALIDATION_ERROR`, `INVALID_CURSOR`, `INVALID_EMAIL_VERIFICATION` |
 | 401 | `UNAUTHORIZED`, `INVALID_CREDENTIALS`, `INVALID_REFRESH_TOKEN` |
 | 404 | `RESOURCE_NOT_FOUND` — 타인 소유·미존재·프로젝트와 챗봇 소속 불일치 동일 처리 |
-| 409 | `EMAIL_ALREADY_EXISTS`, `SERVICE_ALREADY_EXISTS` |
+| 409 | `EMAIL_ALREADY_EXISTS`, `EMAIL_LINK_CONFLICT`, `SERVICE_ALREADY_EXISTS` |
 | 413 / 415 | `PAYLOAD_TOO_LARGE` / `UNSUPPORTED_MEDIA_TYPE` |
 | 429 | `RATE_LIMITED`와 `Retry-After` 초 |
-| 500 / 503 | `INTERNAL_ERROR` / `SERVICE_UNAVAILABLE` |
+| 500 / 503 | `INTERNAL_ERROR` / `SERVICE_UNAVAILABLE`, `EMAIL_VERIFICATION_UNAVAILABLE`, `EMAIL_DELIVERY_FAILED` |
 
 ## 토큰과 프론트 연동
 
@@ -181,3 +181,5 @@ OSORI_TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/osori_test?ch
 기존 계정의 ID와 프로젝트·멤버십은 보존하고 기존 이메일은 null로 둡니다. 기존 사용자는 기존 loginId와 비밀번호 및 확인된 새 이메일로 `legacy-email-link`를 호출한 후 로그인할 수 있습니다. 연결은 한 번만 가능하며 중복 주소는 거부합니다. 이메일이 저장된 DB는 이메일을 이전하기 전 마이그레이션을 내릴 수 없습니다.
 
 인증 메일은 SMTP STARTTLS로 발송합니다. `EMAIL_VERIFICATION_SECRET`은 모든 API 인스턴스에서 동일한 무작위 32바이트 이상 비밀값이어야 합니다. `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` 설정이 없거나 메일 발송에 실패하면 인증 요청은 503으로 실패합니다. IP 및 이메일별 발송 제한을 적용하고, 비밀값을 바꾸면 이전 미사용 코드는 무효화됩니다. 만료된 인증 기록은 `python -m app.maintenance`로 정리합니다. 프론트엔드에는 인증 코드 요청과 입력 단계가 필요합니다.
+
+`400 INVALID_EMAIL_VERIFICATION`은 코드 불일치·만료·사용 완료·시도 횟수 초과를 뜻합니다. 다시 입력하거나 새 코드를 요청하세요. `409 EMAIL_LINK_CONFLICT`는 다른 요청에서 이미 연결을 완료한 경우입니다. `503 EMAIL_VERIFICATION_UNAVAILABLE`은 인증 설정이 없거나 잘못된 경우, `503 EMAIL_DELIVERY_FAILED`는 메일 전송 실패를 뜻합니다. 두 503은 일반적인 `SERVICE_UNAVAILABLE`과 구분해 일시 오류를 표시하세요.
