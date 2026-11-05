@@ -1,12 +1,12 @@
 import base64
 import json
-import re
-from datetime import UTC, datetime
+from datetime import UTC
 from uuid import uuid4
 
 from sqlalchemy import and_, or_, select, update
 
 from app.core.errors import ApiError
+from app.core.cursors import cursor_id, cursor_integer, cursor_time, decode_cursor
 from app.models.policy import Policy, PolicyVersion, TestQuestion, TestSet, TestSetVersion
 from app.schemas.policy import QuestionBody
 from app.services.auth import now
@@ -125,46 +125,16 @@ def version_summary(row):
             'confirmedBy': row.confirmed_by, 'confirmedAt': iso(row.confirmed_at), 'createdAt': iso(row.created_at)}
 
 
-def cursor_object(pairs):
-    """Reject duplicate JSON members instead of silently accepting the last value."""
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError('Duplicate cursor member')
-        result[key] = value
-    return result
-
-
-def invalid_json_constant(value):
-    """Reject nonstandard JSON NaN and infinity tokens at the decoding boundary."""
-    raise ValueError('Non-finite cursor constant')
-
-
 def paginate(db, statement, model, scope, limit, cursor, *, versioned=False):
     """Use scoped keyset pagination, with version ordering for immutable version histories."""
     column = model.version if versioned else model.created_at
     if cursor:
         try:
-            data = json.loads(base64.b64decode(cursor.encode(), altchars=b'-_', validate=True),
-                              object_pairs_hook=cursor_object, parse_constant=invalid_json_constant)
-            if (type(data) is not dict or set(data) != {'scope', 'v', 'id', 'value'}
-                    or data['scope'] != scope or type(data['v']) is not int or data['v'] != 1
-                    or not isinstance(data['id'], str)
-                    or re.fullmatch(r'[A-Za-z0-9_-]{1,100}', data['id']) is None):
+            data = decode_cursor(cursor, {'scope', 'v', 'id', 'value'})
+            if data['scope'] != scope or type(data['v']) is not int or data['v'] != 1:
                 raise ValueError()
-            if versioned:
-                # SQLAlchemy Integer maps to signed INT in MySQL. Do not coerce
-                # floats, numeric strings or booleans into valid cursor values.
-                value = data['value']
-                if type(value) is not int or not 1 <= value <= 2**31 - 1:
-                    raise ValueError()
-            else:
-                if not isinstance(data['value'], str):
-                    raise ValueError()
-                value = datetime.fromisoformat(data['value'])
-                # Persisted timestamps are naive UTC; MySQL DATETIME starts at 1000.
-                if value.tzinfo is not None or value.year < 1000 or value.isoformat() != data['value']:
-                    raise ValueError()
+            cursor_id(data['id'])
+            value = cursor_integer(data['value']) if versioned else cursor_time(data['value'])
         except (ValueError, KeyError, TypeError, UnicodeError, OverflowError):
             raise ApiError(400, 'INVALID_CURSOR', '유효하지 않은 커서입니다.') from None
         statement = statement.where(or_(column < value, and_(column == value, model.id < data['id'])))

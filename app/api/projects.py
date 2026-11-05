@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.dependencies import CurrentUser, Db, OwnedProject, ResourceId
 from app.core.errors import ApiError
+from app.core.cursors import cursor_id, cursor_time, decode_cursor
 from app.models.project import Chatbot, Project
 from app.models.connection import Connection
 from app.schemas.project import ChatbotCreate, ProjectCreate
@@ -62,13 +63,11 @@ def list_projects(user: CurrentUser, db: Db,
     statement = select(Project, has_service).where(Project.owner_id == user.id)
     if cursor:
         try:
-            payload = json.loads(base64.b64decode(cursor.encode(), altchars=b'-_', validate=True))
-            if payload['v'] != 1 or payload['owner'] != user.id:
+            payload = decode_cursor(cursor, {'v', 'owner', 'createdAt', 'id'})
+            if type(payload['v']) is not int or payload['v'] != 1 or payload['owner'] != user.id:
                 raise ValueError()
-            created = datetime.fromisoformat(payload['createdAt'])
-            last_id = payload['id']
-            if not isinstance(last_id, str) or len(last_id) > 100:
-                raise ValueError()
+            created = cursor_time(payload['createdAt'])
+            last_id = cursor_id(payload['id'])
         except (ValueError, KeyError, TypeError, UnicodeError):
             raise ApiError(400, 'INVALID_CURSOR', '유효하지 않은 커서입니다.') from None
         statement = statement.where(or_(Project.created_at < created,

@@ -24,6 +24,7 @@ main의 테스트가 성공하면 production 환경에서 SSH로 해당 커밋�
 | Python | Ubuntu 24.04의 Python 3.12, 릴리스별 `.venv` |
 | MySQL | 로컬 `osori` DB, 전용 `osori_app` 계정 |
 | 애플리케이션 사용자 | 로그인 불가능한 시스템 사용자 `osori` |
+| 빌드 사용자 | 별도 시스템 사용자 `osori-build`, runtime과 그룹·홈 분리 |
 | 현재/직전 릴리스 | `/opt/osori-backend/current`, `/opt/osori-backend/previous` 심볼릭 링크 |
 | 릴리스 저장 | `/opt/osori-backend/releases/{commit}-{runId}-{attempt}` |
 | 공통 비밀 설정 | `/etc/osori-backend.env`, root:osori, 640 |
@@ -54,7 +55,7 @@ CI 전용 키의 공개 키만 ubuntu의 authorized_keys에 위 제한 옵션과
 
 1. 서버와 GitHub 양쪽에서 동시 배포를 직렬화합니다.
 2. 테스트한 커밋의 git archive를 전송합니다. 압축 크기 50MiB·해제 크기 200MiB로 제한하고 경로 탈출·링크·특수 파일을 거부합니다.
-3. 새 디렉터리의 가상환경에 해시로 고정한 requirements.lock을 설치합니다. 이 단계에서 기존 API는 계속 실행됩니다.
+3. 새 디렉터리의 가상환경에 별도 osori-build 계정으로 해시 고정 requirements.lock을 설치합니다. 소스·배포 코드는 처음부터 root 소유·그룹 읽기 전용이며 빌드는 .venv만 쓸 수 있습니다. 이 단계에서 기존 API는 계속 실행됩니다.
 4. 환경 설정·암호화 키·DB 연결을 확인합니다.
 5. 워커의 진행 중 호출이 끝나면 API와 워커를 멈추고 DB 백업을 생성합니다. 백업 실패 시 마이그레이션하지 않습니다.
 6. Alembic upgrade head 후 current 링크와 systemd 설정을 갱신하고 API·워커를 시작합니다.
@@ -95,3 +96,29 @@ sudo install -m 0644 deploy/archive.py /usr/local/lib/osori/archive.py
 ```
 
 이후 새 릴리스 배포가 API·연결 테스트 워커·평가 워커의 unit을 설치하고 함께 시작·확인합니다. 평가 워커 종료 대기 한도는 480초이며 현재 문항의 A/B 기업 호출·판정이 끝나도록 기다립니다. 남은 문항은 WORKER_STOPPED로 끝나므로 배포 전에 진행 중 평가를 확인하세요. 이전 코드로 롤백하면 이전 릴리스에 평가 unit이 있는지 확인해 서비스를 복구하며, 평가 기능 이전 릴리스라면 평가 서비스를 중지·해제합니다. DB 테이블과 저장된 평가 이력은 자동 삭제하지 않습니다.
+
+## 배포 권한 분리
+
+운영 API·워커는 `osori`, 의존성 빌드는 `osori-build`로 실행합니다. 두 계정은 그룹·홈을 공유하지 않습니다. 빌드 홈 `/var/lib/osori-build`는 root 소유 750이며 런타임 계정은 접근할 수 없습니다. `/opt/osori-backend`와 releases 부모에는 빌드 계정이 경로를 통과하도록 others 실행 권한만 부여하고, 개별 릴리스·파일은 별도 그룹 권한으로 보호합니다.
+
+빌드 프로세스는 비운 환경(`env -i`)·Python 격리 모드(`-I`)·pip `--isolated --no-cache-dir`를 사용합니다. 운영 홈의 user site·sitecustomize·pip 설정을 읽지 않습니다. 원본 소스는 빌드 동안 root 소유로 유지하며 쓰기 가능한 `.venv`만 빌드 계정에 줍니다. 빌드가 끝나면 릴리스 전체를 root:osori의 읽기 전용 파일로 고정하고 preflight·마이그레이션을 운영 계정으로 실행합니다.
+
+root 백업은 `/usr/bin/python3 -I deploy/backup.py <백업경로>`로 실행합니다. 이 코드는 root 소유 원본이며 표준 라이브러리만 사용합니다. 앱 가상환경·앱 패키지·운영 계정의 Python 시작 코드를 root로 실행하지 않습니다. 백업은 기존 서버 환경 파일의 로컬 osori DB만 허용하며 결과는 600 권한의 새 파일로 생성합니다. 실패한 부분 파일만 삭제하고 기존 백업을 덮어쓰지 않습니다.
+
+새 bootstrap은 빌드 계정도 준비하며, 이미 구성한 서버에서는 새 배포 스크립트가 첫 사용 시 필요한 계정·권한을 확인하고 준비합니다. 기존의 root 설치 배포 도구를 **첫 보안 패치 배포부터** 적용하려면 신뢰할 수 있는 관리자 세션에서 최신 deploy 디렉터리로 다음을 실행합니다.
+
+```bash
+sudo install -m 0755 deploy/deploy.sh /usr/local/sbin/osori-deploy
+sudo install -m 0644 deploy/archive.py /usr/local/lib/osori/archive.py
+sudo /usr/local/sbin/osori-deploy --prepare-host
+```
+
+서버 도구를 선갱신하지 않으면 기존 도구가 이번 릴리스를 배포하고, 성공 후 새 도구를 설치하므로 권한 분리는 그 다음 배포부터 적용됩니다. 실제 서버의 계정·도구 갱신 여부는 별도로 확인해야 합니다. `deploy/manage.py backup`은 이전 배포 도구와의 한 차례 호환을 위한 경로이며 신규 root 배포에서는 사용하지 않습니다.
+
+GitHub Actions는 읽기 전용 저장소를 붙인 일회용 Python 컨테이너에서 운영 홈·PYTHONPATH·앱 가상환경 오염과 원본 쓰기 시도를 검증합니다. 직접 확인할 때도 운영 서버가 아닌 일회용 컨테이너를 사용합니다.
+
+```bash
+docker run --rm --network none -v "$PWD:/source:ro" \
+  python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30 \
+  python -I /source/tests/deployment_isolation_check.py
+```

@@ -35,7 +35,7 @@ def receive(stream, destination):
         validate_members(members)
         bundle.extractall(source, members=members, filter='data')
     for required in ('app/main.py', 'requirements.lock', 'alembic.ini',
-                     'deploy/manage.py', 'deploy/systemd/osori-api.service',
+                     'deploy/manage.py', 'deploy/backup.py', 'deploy/systemd/osori-api.service',
                      'deploy/systemd/osori-worker.service', 'deploy/systemd/osori-evaluation-worker.service'):
         if not (source / required).is_file():
             raise ValueError('Incomplete release')

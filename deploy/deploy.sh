@@ -3,6 +3,49 @@
 set -Eeuo pipefail
 umask 027
 [[ $EUID -eq 0 ]] || { echo 'Run through the deployment entrypoint.' >&2; exit 1; }
+# The runtime UID and its writable StateDirectory must never influence build startup.
+prepare_builder() {
+  if ! id osori-build >/dev/null 2>&1; then
+    useradd --system --user-group --home-dir /var/lib/osori-build --no-create-home --shell /usr/sbin/nologin osori-build
+  fi
+  [[ $(id -u osori-build) -ne 0 && $(id -gn osori-build) == osori-build \
+      && $(getent passwd osori-build | cut -d: -f6) == /var/lib/osori-build \
+      && $(id -G osori-build) == "$(id -g osori-build)" ]] || {
+    echo 'Unexpected build account configuration.' >&2; return 1;
+  }
+  if [[ " $(id -G osori) " == *" $(id -g osori-build) "* || -L /var/lib/osori-build ]]; then
+    echo 'The runtime account must not access the build home.' >&2
+    return 1
+  fi
+  install -d -m 0750 -o root -g osori-build /var/lib/osori-build
+  # Execute-only access lets the private build group traverse to its release.
+  install -d -m 0751 -o root -g osori /opt/osori-backend /opt/osori-backend/releases
+}
+
+run_build() {
+  runuser -u osori-build -- env -i HOME=/var/lib/osori-build PATH=/usr/bin:/bin \
+    LANG=C.UTF-8 PYTHONNOUSERSITE=1 "$@"
+}
+
+build_release() {
+  local source=$1
+  [[ ! -e "$source/.venv" && ! -L "$source/.venv" ]] || return 1
+  # Build dependencies may write only the venv; deployment scripts stay root-owned.
+  chown -R root:osori-build "$source"
+  chmod -R u+rwX,g=rX,o= "$source"
+  install -d -m 0700 -o osori-build -g osori-build "$source/.venv"
+  run_build /usr/bin/python3.12 -I -m venv "$source/.venv"
+  run_build "$source/.venv/bin/python" -I -m pip --isolated install --no-cache-dir --disable-pip-version-check --require-hashes -r "$source/requirements.lock"
+  run_build "$source/.venv/bin/python" -I -m pip --isolated --no-cache-dir check
+  chown -R root:osori "$source"
+  chmod -R u+rwX,g=rX,o= "$source"
+}
+
+# Bootstrap and existing hosts can provision the isolated account without a release upload.
+if [[ $# -eq 1 && $1 == --prepare-host ]]; then
+  prepare_builder
+  exit 0
+fi
 [[ $# -eq 3 && $1 =~ ^[a-f0-9]{40}$ && $2 =~ ^[1-9][0-9]{0,19}$ && $3 =~ ^[1-9][0-9]{0,19}$ ]] || exit 2
 revision=$1
 release_id="$1-$2-$3"
@@ -68,18 +111,15 @@ finish() {
 }
 trap finish EXIT
 
-python3 /usr/local/lib/osori/archive.py "$temporary"
+prepare_builder
+/usr/bin/python3 -I /usr/local/lib/osori/archive.py "$temporary"
 mv "$temporary/source" "$release"
-chown -R osori:osori "$release"
-chmod -R u+rwX,g+rX,o-rwx "$release"
+build_release "$release"
 cd "$release"
-runuser -u osori -- python3.12 -m venv .venv
-runuser -u osori -- .venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r requirements.lock
-runuser -u osori -- .venv/bin/python -m pip check
-runuser -u osori -- .venv/bin/python deploy/manage.py preflight
+runuser -u osori -- .venv/bin/python -I deploy/manage.py preflight
 printf 'OSORI_RELEASE=%s\n' "$revision" > .release.env
-chown -R root:osori "$release"
-chmod -R g+rX,o-rwx "$release"
+chown root:osori .release.env
+chmod 0640 .release.env
 
 if [[ -z "$previous" ]] && ss -lntH 'sport = :8000' | grep -q .; then
   echo 'Port 8000 is already used by another application.' >&2
@@ -90,8 +130,8 @@ if [[ -n "$previous" ]]; then
   # The worker handles SIGTERM by finishing the current bounded request before exiting.
   systemctl stop "${services[@]}"
 fi
-.venv/bin/python deploy/manage.py backup "/var/backups/osori-backend/$release_id.sql.gz"
-runuser -u osori -- .venv/bin/python deploy/manage.py migrate
+/usr/bin/python3 -I deploy/backup.py "/var/backups/osori-backend/$release_id.sql.gz"
+runuser -u osori -- .venv/bin/python -I deploy/manage.py migrate
 set_current "$release"
 install_units "$release"
 systemctl enable "${services[@]}"
@@ -118,7 +158,7 @@ install -m 0755 deploy/deploy.sh /usr/local/sbin/osori-deploy
 install -m 0755 deploy/ssh_entrypoint.py /usr/local/bin/osori-ci-entrypoint
 install -m 0644 deploy/archive.py /usr/local/lib/osori/archive.py
 
-python3 - "$root" <<'PY'
+/usr/bin/python3 -I - "$root" <<'PY'
 from pathlib import Path
 import re
 import shutil
