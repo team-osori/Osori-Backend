@@ -42,7 +42,7 @@ def apply_reviews(question, side, reviews):
     return effective
 
 
-def describe_side(question, side, reviews=()):
+def describe_side(question, side, reviews=(), *, expected_criteria=None):
     automatic = side
     if side and reviews:
         side = apply_reviews(question, side, reviews)
@@ -81,13 +81,13 @@ def describe_side(question, side, reviews=()):
     results = list((side or {}).get('criteria', {}).values()) + (side or {}).get('conditionResults', [])
     errors = [result for result in results if result['status'] == 'error']
     unavailable = [result for result in results if result['status'] == 'not_evaluable']
-    screen = screen_status(question, side)
+    screen = screen_status(question, side, expected_criteria=expected_criteria)
     return {'status': status, 'screenStatus': screen, 'needsReview': screen in ('EXECUTION_ERROR', 'JUDGMENT_ERROR', 'REVIEW_REQUIRED', 'INCORRECT'),
             'hasJudgmentError': bool(errors), 'hasUnevaluableCriteria': bool(unavailable),
             'conditions': conditions, 'issues': issues, 'humanReviewApplied': bool(reviews)}
 
 
-def screen_status(question, side):
+def screen_status(question, side, *, expected_criteria=None):
     """Exclusive UI buckets: incomplete judgement never becomes an O/X grade."""
     call = (side or {}).get('callStatus', 'NOT_RUN')
     if call == 'NOT_RUN':
@@ -99,6 +99,8 @@ def screen_status(question, side):
     results = list(side.get('criteria', {}).values()) + side.get('conditionResults', [])
     if any(result['status'] == 'error' for result in results):
         return 'JUDGMENT_ERROR'
+    if expected_criteria and not set(expected_criteria) <= set(side.get('criteria', {})):
+        return 'REVIEW_REQUIRED'
     decisions = {result['conditionId'] for result in side.get('conditionResults', [])}
     if (not results or any(result['status'] != 'judged' or result['verdict'] is None for result in results)
             or any(condition['id'] not in decisions for condition in question.get('expectedConditions', []))):
@@ -106,22 +108,28 @@ def screen_status(question, side):
     return 'INCORRECT' if any(result['verdict'] == 'fail' for result in results) else 'CORRECT'
 
 
+def reviewed_side(question, side, reviews=(), overall=None, *, expected_criteria=None):
+    """One O/X projection shared by analytics and the Figma grading grid."""
+    detail = describe_side(question, side, reviews, expected_criteria=expected_criteria)
+    base_screen_status = detail['screenStatus']
+    conflict = bool(overall and base_screen_status in ('CORRECT', 'INCORRECT')
+                    and overall['verdict'] in ('pass', 'fail')
+                    and (overall['verdict'] == 'pass') != (base_screen_status == 'CORRECT'))
+    if conflict or (overall and overall['verdict'] == 'not_evaluable'
+                    and base_screen_status in ('CORRECT', 'INCORRECT')):
+        detail['screenStatus'] = 'REVIEW_REQUIRED'
+        detail['needsReview'] = True
+    return {**detail, 'answerReview': overall, 'reviewConflict': conflict, 'derivedScreenStatus': base_screen_status}
+
+
 def item_analysis(run, item, reviews=None, answer_reviews=None):
     reviews = reviews or {}
     result = {}
     for name in side_names(run.inputs):
-        detail = describe_side(item.input, getattr(item, name),
-            [value for (item_id, side, condition_id), value in reviews.items() if item_id == item.id and side == name])
         overall = (answer_reviews or {}).get((item.id, name))
-        base_screen_status = detail['screenStatus']
-        conflict = bool(overall and base_screen_status in ('CORRECT', 'INCORRECT')
-                        and overall['verdict'] in ('pass', 'fail')
-                        and (overall['verdict'] == 'pass') != (base_screen_status == 'CORRECT'))
-        if conflict or (overall and overall['verdict'] == 'not_evaluable'
-                        and base_screen_status in ('CORRECT', 'INCORRECT')):
-            detail['screenStatus'] = 'REVIEW_REQUIRED'
-            detail['needsReview'] = True
-        detail.update(answerReview=overall, reviewConflict=conflict, derivedScreenStatus=base_screen_status)
+        detail = reviewed_side(item.input, getattr(item, name),
+            [value for (item_id, side, condition_id), value in reviews.items() if item_id == item.id and side == name],
+            overall, expected_criteria=run.inputs.get('criteria', {}).get('definitions'))
         causes = cause_analysis(run.inputs, item.input, name, getattr(item, name))
         failed = {condition['conditionId'] for condition in detail['conditions']
                   if condition['judgment'] and condition['judgment']['verdict'] == 'fail'}

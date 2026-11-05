@@ -106,7 +106,7 @@ class AnswerReviewCreate(BaseModel):
     expectedRevision: Annotated[int, Field(strict=True, ge=0, le=2**31 - 1)]
     side: Literal['a', 'b'] = 'a'
     verdict: Literal['pass', 'fail', 'not_evaluable']
-    reason: RequiredText
+    reason: RequiredText | None = None
 
 
 class AnswerReviewOut(BaseModel):
@@ -115,6 +115,6 @@ class AnswerReviewOut(BaseModel):
     revision: int
     side: Literal['a', 'b']
     verdict: Literal['pass', 'fail', 'not_evaluable']
-    reason: str
+    reason: str | None
     reviewedBy: str
     createdAt: str

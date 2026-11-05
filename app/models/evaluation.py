@@ -65,6 +65,6 @@ class EvaluationAnswerReview(Base):
     revision: Mapped[int] = mapped_column(Integer)
     side: Mapped[str] = mapped_column(String(1))
     verdict: Mapped[str] = mapped_column(String(20))
-    reason: Mapped[str] = mapped_column(String(2000))
+    reason: Mapped[str | None] = mapped_column(String(2000))
     reviewed_by: Mapped[str] = mapped_column(ForeignKey('users.id'))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

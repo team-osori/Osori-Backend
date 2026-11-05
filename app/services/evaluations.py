@@ -114,6 +114,8 @@ def item_summary(row, inputs=None):
     """Keep list responses bounded by excluding answer and document bodies."""
     single = inputs is not None and inputs.get('mode') == 'SINGLE'
     return {'id': row.id, 'questionId': row.question_id, 'question': row.input['question'],
+        'questionNumber': next((index for index, question in enumerate(
+            (inputs or {}).get('testSet', {}).get('questions', []), 1) if question['id'] == row.question_id), None),
         'status': row.status, 'aCallStatus': row.a['callStatus'] if row.a else 'NOT_RUN',
         'bCallStatus': 'NOT_APPLICABLE' if single else row.b['callStatus'] if row.b else 'NOT_RUN',
         'changes': {} if single else {key: change(row.a, row.b, key) for key in

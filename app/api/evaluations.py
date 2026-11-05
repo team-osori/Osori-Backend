@@ -17,6 +17,8 @@ from app.schemas.evaluation import (Criterion, EvaluationCreate, EvaluationInput
 from app.schemas.responses import Data, Page, ERROR_RESPONSES
 from app.services import evaluations as service
 from app.services import evaluation_analysis as analysis
+from app.services import evaluation_grading as grading
+from app.schemas.grading import GradingBoard
 from app.schemas.condition_evaluation import IssueKind
 from app.schemas.condition_evaluation import ReviewCreate, ReviewOut, AnswerReviewCreate, AnswerReviewOut
 from app.services.evaluation_reviews import latest_reviews, review_data, latest_answer_reviews, answer_review_data
@@ -123,6 +125,12 @@ def analyzed_item_summary(run, item, detail):
             'activeHypothesisAreas': detail['activeHypothesisAreas']}
 
 
+@router.get('/{evaluationId}/grading', response_model=Data[GradingBoard])
+def get_grading_board(evaluationId: ResourceId, service_row: OwnedService, db: Db):
+    """최대 200개 문항의 고정 번호·상태를 답변 원문 없이 한 번에 조회합니다."""
+    return {'data': grading.board(db, service.get_run(db, service_row.id, evaluationId))}
+
+
 @router.get('/{evaluationId}/items', response_model=Data[Page[EvaluationItemSummary]])
 def list_items(evaluationId: ResourceId, service_row: OwnedService, db: Db,
                limit: Limit = 20, cursor: Cursor = None, criterion: Annotated[Criterion | None, Query(description='평가 inputs.criteria.definitions에 포함된 기준만 필터링할 수 있습니다. 미포함 기준은 빈 목록을 반환합니다.')] = None,
@@ -185,7 +193,8 @@ def get_item(evaluationId: ResourceId, itemId: ResourceId, service_row: OwnedSer
     details = analysis.item_analysis(row, item, reviews, latest_answer_reviews(db, [item.id]))
     return {'data': {**analyzed_item_summary(row, item, details['a']), 'input': item.input, 'a': item.a, 'b': item.b,
         'resultStatus': details['a']['status'], 'needsReview': details['a']['needsReview'], 'analysis': details,
-        'reviewRevision': item.review_revision, 'latestReviews': list(reviews.values())}}
+        'reviewRevision': item.review_revision, 'latestReviews': list(reviews.values()),
+        **grading.navigation(db, row, item.question_id)}}
 
 
 @router.post('/{evaluationId}/items/{itemId}/reviews', status_code=201, response_model=Data[ReviewOut])

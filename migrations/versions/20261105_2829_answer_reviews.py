@@ -15,7 +15,7 @@ def upgrade():
         sa.Column('revision', sa.Integer(), nullable=False),
         sa.Column('side', sa.String(1), nullable=False),
         sa.Column('verdict', sa.String(20), nullable=False),
-        sa.Column('reason', sa.String(2000), nullable=False),
+        sa.Column('reason', sa.String(2000), nullable=True),
         sa.Column('reviewed_by', sa.String(36), sa.ForeignKey('users.id'), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint('item_id', 'revision', name='uq_evaluation_answer_review_revision'))

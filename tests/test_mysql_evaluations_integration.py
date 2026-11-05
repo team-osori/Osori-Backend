@@ -190,3 +190,13 @@ def test_mysql_answer_and_condition_reviews_share_revision(mysql_client, monkeyp
         conditions = db.scalars(select(EvaluationReview).where(EvaluationReview.item_id == detail['id'])).all()
         answers = db.scalars(select(EvaluationAnswerReview).where(EvaluationAnswerReview.item_id == detail['id'])).all()
         assert len(conditions) + len(answers) == 1
+    # The Figma buttons do not require a fabricated reason; NULL round-trips on MySQL.
+    saved = client.post(endpoint + '/answer-reviews', headers=headers,
+        json={'expectedRevision': 1, 'verdict': 'pass'})
+    assert saved.status_code == 201 and saved.json()['data']['reason'] is None
+    board = client.get(path + '/grading', headers=headers)
+    assert board.status_code == 200, board.text
+    assert board.json()['data']['items'][0]['questionNumber'] == 1
+    assert board.json()['data']['items'][0]['answerReview']['reason'] is None
+    summary = client.get(path + '/summary', headers=headers).json()['data']['analysis']['variants']['a']
+    assert board.json()['data']['counts'] == summary['screenCounts']

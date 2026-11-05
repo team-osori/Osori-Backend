@@ -69,7 +69,8 @@ remaining도 자동으로 다시 처리되지 않는다. 기존 resume/rerun 계
 {"expectedRevision":0,"side":"a","verdict":"pass","reason":"정책과 답변을 대조해 정답으로 검토했습니다."}
 ```
 
-- pass=O, fail=X, not_evaluable=검토 보류. reason은 공백 아닌 필수 문자열이다.
+- pass=O, fail=X, not_evaluable=검토 보류. 피그마의 버튼만으로 저장할 수 있도록 reason은 선택이다.
+  생략/null이면 이유를 입력하지 않았다는 뜻이며 서버가 이유를 꾸미지 않는다. 입력하면 공백 아닌 1~2000자다.
 - 종료한 평가에서 답변 호출이 성공한 side만 검토한다. 실행 중은 409 EVALUATION_NOT_TERMINAL,
   답변 없는 실패·미호출은 409 ANSWER_UNAVAILABLE, SINGLE의 side=b는 400 INVALID_REVIEW_TARGET이다.
 - 조건 검토와 전체 판정은 **같은 문항 reviewRevision**을 공유한다. 어느 쪽을 수정해도 증가한다.
@@ -179,5 +180,34 @@ PR 제출 전 최신 main(05ba5b3)에 재배치했으며 down_revision은 `20261
 프롬프트 스냅샷·담당자 검토 후 활성 가설·O/X 충돌·권한·이력·동시 revision.
 MySQL의 전체 판정/조건 검토 경합 및 Alembic 모델 일치는 CI에서 확인한다.
 테스트의 기업 API와 판정 모델은 대역이며 실제 기업 API/Bedrock 호출은 하지 않는다.
-Figma 연결 노드 306:3378은 로그인 화면이므로 최종 평가 화면과의 시각적 대조 및 실제
-프론트 O/X 저장 동작은 연동 검증이 남는다.
+이슈 링크의 306:3378은 로그인 폼이다. 추가 확인에서는 같은 파일의 `305:3372`
+(07 2단계 채점) 코드 컨텍스트·스크린샷을 읽어 그리드 번호, 이전/다음, 맞음/틀림 버튼을
+확인했다. 디자인 파일과 프론트 코드는 수정하지 않았다. 실제 프론트 저장 동작은 별도 연동 검증이 필요하다.
+
+## 피그마 채점 그리드
+
+`GET /{evaluationId}/grading`은 SINGLE 전용이며 확정 질문 순서로 최대 200개 문항의
+가벼운 타일을 한 번에 반환한다. COMPARE에는 `409 SINGLE_EVALUATION_REQUIRED`를 반환한다.
+각 타일은 id/questionId/questionNumber/category, screenStatus/derivedScreenStatus,
+callStatus/answerAvailable/canReview/needsReview, reviewRevision/answerReview/reviewConflict를 갖는다.
+답변 원문·검색 문서·B 결과는 이 쿼리에서 읽지 않는다. 상태와 전체 O/X 충돌 규칙은
+summary와 동일한 함수를 재사용하므로 별도 판정·별도 저장 테이블을 만들지 않는다.
+
+- `counts`는 기존 summary.analysis.variants.a.screenCounts와 동일하다.
+- `gradedQuestions=correct+incorrect`는 실제 화면 O/X 수다.
+- `processedQuestions=total-pending-remaining`은 결과·오류·검토 필요 상태가 확보된 처리 수다.
+- `notRunQuestions`는 종료한 평가의 remaining이며 진행 중에는 0이다. 취소된 미호출을 완료로 세지 않는다.
+- `canReview`는 종료 평가의 성공한 답변에서만 true다. 기존 answer-reviews 경로로 저장한다.
+- `canOpenWrongAnswers`는 평가가 종료됐고 processedQuestions가 1개 이상일 때 true다.
+- evaluationStatus/testSetVersionId, 실제 선택한 promptVersionId/promptVersion 또는 null,
+  useConfiguredPrompt, criteriaVersion도 함께 반환한다. 현재 최신 버전으로 대체하지 않는다.
+
+목록·상세에도 `questionNumber`를 추가했다. 확정 스냅샷의 1부터 시작하는 번호이며
+UUID·동일 초 생성 시각·필터·페이지에 따라 바뀌지 않는다. 기존 목록의 커서 정렬은 유지한다.
+그리드는 위 새 경로로 읽고, 문항 선택 시 기존 `GET /{id}/items/{itemId}`를 사용한다.
+상세의 previousItemId/nextItemId는 필터와 무관한 확정 시험지 전체 순서이며 끝은 null이다.
+실제 평가 문항과 확정본 구성이 다르면 그리드는 `409 EVALUATION_SNAPSHOT_MISMATCH`다.
+
+기존 answer-reviews 테이블의 reason은 미배포 migration에서 nullable로 맞췄다.
+프로젝트 보존 기간이 지나 영구 삭제할 때 전체 답변 검토를 평가 문항보다 먼저 삭제해
+외래 키 오류가 발생하지 않게 한다. 기존 AI 원본·조건별 검토·전후 비교 의미는 유지한다.

@@ -3,7 +3,7 @@ from datetime import timedelta
 from sqlalchemy import delete, select, update
 
 from app.models.connection import Connection, ConnectionTest
-from app.models.evaluation import Evaluation, EvaluationItem, EvaluationReview
+from app.models.evaluation import Evaluation, EvaluationItem, EvaluationReview, EvaluationAnswerReview
 from app.models.policy import GenerationRequest, Policy, PolicyVersion, QuestionHistory, TestQuestion, TestSet, TestSetVersion
 from app.models.project import Chatbot, Project, ProjectMember
 from app.models.prompt import Prompt, PromptVersion
@@ -37,6 +37,7 @@ def purge_expired_projects(db):
         versions = select(TestSetVersion.id).where(TestSetVersion.testset_id.in_(testsets))
         policies = select(Policy.id).where(Policy.project_id == project.id)
         for model, condition in (
+            (EvaluationAnswerReview, EvaluationAnswerReview.item_id.in_(items)),
             (EvaluationReview, EvaluationReview.item_id.in_(items)),
             (EvaluationItem, EvaluationItem.evaluation_id.in_(evaluations)),
             (Evaluation, Evaluation.service_id.in_(services)),

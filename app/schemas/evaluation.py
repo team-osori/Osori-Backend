@@ -182,6 +182,7 @@ class EvaluationItemSummary(BaseModel):
     id: str
     questionId: str
     question: str
+    questionNumber: int | None = None
     status: Literal['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'NOT_RUN', 'INTERRUPTED']
     aCallStatus: Literal['NOT_RUN', 'RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED']
     bCallStatus: Literal['NOT_APPLICABLE', 'NOT_RUN', 'RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED']
@@ -251,6 +252,8 @@ class ItemAnalysis(BaseModel):
 
 
 class EvaluationItemResponse(EvaluationItemSummary):
+    previousItemId: str | None = None
+    nextItemId: str | None = None
     input: dict
     a: EvaluationSide | None
     b: EvaluationSide | None
