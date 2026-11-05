@@ -1,3 +1,4 @@
+from email_helpers import verified_post
 from copy import deepcopy
 
 import pytest
@@ -8,8 +9,8 @@ from app.services.question_generation import get_question_generator
 
 def account(client, login='owner'):
     """Create isolated API credentials without touching developer data."""
-    body = {'loginId': login, 'password': 'secure-password-123'}
-    assert client.post('/api/auth/signup', json={**body, 'name': 'Test'}).status_code == 201
+    body = {'email': f'{login}@example.com', 'password': 'secure-password-123'}
+    assert verified_post(client, '/api/auth/signup', json={**body, 'name': 'Test'}).status_code == 201
     tokens = client.post('/api/auth/login', json=body).json()['data']
     return {'Authorization': 'Bearer ' + tokens['accessToken']}
 

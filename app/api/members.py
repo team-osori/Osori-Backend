@@ -15,9 +15,10 @@ router = APIRouter(prefix='/api', tags=['members'], responses=ERROR_RESPONSES)
 
 
 def member_data(user, row=None):
-    return {'userId': user.id, 'loginId': user.login_id, 'name': user.name,
+    """Serialize a project owner, member, or pending invite."""
+    return {'userId': user.id, 'name': user.name,
         'role': row.role if row else 'admin', 'status': row.status if row else 'owner',
-        'revision': row.revision if row else 1, 'email': None, 'lastSeenAt': iso(user.last_seen_at)}
+        'revision': row.revision if row else 1, 'email': user.email, 'lastSeenAt': iso(user.last_seen_at)}
 
 
 @router.get('/projects/{projectId}/members', response_model=Data[Page[MemberOut]])
@@ -29,10 +30,11 @@ def list_members(project: OwnedProject, db: Db):
 
 @router.post('/projects/{projectId}/invitations', status_code=201, response_model=Data[InvitationOut])
 def invite(body: InvitationCreate, project: AdminProject, user: CurrentUser, db: Db):
+    """Invite an existing email account while enforcing membership limits."""
     db.execute(select(Project.id).where(Project.id == project.id).with_for_update())
-    target = db.scalar(select(User).where(User.login_id == body.loginId))
+    target = db.scalar(select(User).where(User.email == body.email))
     if target is None:
-        raise ApiError(404, 'USER_NOT_FOUND', '가입된 로그인 ID를 확인하세요.')
+        raise ApiError(404, 'USER_NOT_FOUND', '가입된 이메일을 확인하세요.')
     if target.id == project.owner_id or db.scalar(select(ProjectMember.id).where(
             ProjectMember.project_id == project.id, ProjectMember.user_id == target.id).with_for_update()):
         raise ApiError(409, 'MEMBER_ALREADY_EXISTS', '이미 멤버이거나 초대 중입니다.')

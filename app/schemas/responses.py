@@ -16,10 +16,9 @@ class Page(BaseModel, Generic[T]):
 
 class UserResponse(BaseModel):
     id: str
-    loginId: str
+    email: str | None
     name: str
     createdAt: str
-    email: None = None
     lastSeenAt: str | None = None
 
 
@@ -33,7 +32,7 @@ class LoginResponse(TokenPair):
 
 
 class Availability(BaseModel):
-    loginId: str
+    email: str
     available: bool
 
 
