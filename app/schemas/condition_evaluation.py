@@ -78,3 +78,24 @@ class ConditionJudgement(BaseModel):
     questionResolution: ScoredResult
     communicationQuality: ScoredResult
     conditionResults: Annotated[list[ConditionResult], Field(min_length=1, max_length=100)]
+
+
+class ReviewCreate(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    expectedRevision: Annotated[int, Field(strict=True, ge=0, le=2**31 - 1)]
+    side: Literal['a', 'b'] = 'a'
+    conditionId: Id
+    verdict: Literal['pass', 'fail', 'not_evaluable']
+    reason: RequiredText
+
+
+class ReviewOut(BaseModel):
+    id: str
+    itemId: str
+    revision: int
+    side: Literal['a', 'b']
+    conditionId: str
+    verdict: Literal['pass', 'fail', 'not_evaluable']
+    reason: str
+    reviewedBy: str
+    createdAt: str

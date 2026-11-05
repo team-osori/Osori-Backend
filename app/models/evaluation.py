@@ -37,4 +37,20 @@ class EvaluationItem(Base):
     status: Mapped[str] = mapped_column(String(20))
     a: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     b: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
+    review_revision: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class EvaluationReview(Base):
+    """Append-only human decisions retain automatic results and prior review history."""
+    __tablename__ = 'evaluation_reviews'
+    __table_args__ = (UniqueConstraint('item_id', 'revision', name='uq_evaluation_review_revision'),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey('evaluation_items.id'), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    side: Mapped[str] = mapped_column(String(1))
+    condition_id: Mapped[str] = mapped_column(String(100))
+    verdict: Mapped[str] = mapped_column(String(20))
+    reason: Mapped[str] = mapped_column(String(2000))
+    reviewed_by: Mapped[str] = mapped_column(ForeignKey('users.id'))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
