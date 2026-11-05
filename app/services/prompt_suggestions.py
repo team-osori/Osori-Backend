@@ -27,7 +27,7 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
 
 
-def source_snapshot(db, service_id, body):
+def source_snapshot(db, service_id, body, *, lock=False):
     run = get_run(db, service_id, body.evaluationId)
     if (run.status not in ('COMPLETED', 'PARTIAL_FAILED', 'FAILED')
             or run.inputs.get('mode') != 'SINGLE' or run.inputs.get('criteria', {}).get('version') != 2):
@@ -36,8 +36,11 @@ def source_snapshot(db, service_id, body):
     prompt = run.inputs.get('prompts', {}).get('a')
     if not prompt or prompt['id'] != base.id or prompt['content'] != base.content:
         raise ApiError(409, 'SUGGESTION_PROMPT_MISMATCH', '평가에 사용한 프롬프트 원문 버전을 선택하세요.')
-    items = db.scalars(select(EvaluationItem).where(EvaluationItem.evaluation_id == run.id,
-        EvaluationItem.id.in_(body.itemIds)).order_by(EvaluationItem.id)).all()
+    statement = select(EvaluationItem).where(EvaluationItem.evaluation_id == run.id,
+        EvaluationItem.id.in_(body.itemIds)).order_by(EvaluationItem.id)
+    if lock:
+        statement = statement.with_for_update().execution_options(populate_existing=True)
+    items = db.scalars(statement).all()
     if len(items) != len(body.itemIds):
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '평가 문항을 찾을 수 없습니다.')
     reviews = latest_reviews(db, body.itemIds)
@@ -179,3 +182,35 @@ def guarded_update(db, row, revision, **values):
     if changed.rowcount != 1:
         db.rollback()
         raise ApiError(409, 'SUGGESTION_CONFLICT', '최신 수정 제안 상태와 revision을 확인하세요.')
+
+
+def apply_suggestions(db, service_id, prompt, body):
+    from app.schemas.prompt_suggestion import SuggestionCreate
+    from app.services.prompts import save_version
+
+    # A current locking read makes simultaneous retries replay the committed version on MySQL.
+    row = db.scalar(select(PromptSuggestion).where(PromptSuggestion.id == body.suggestionId,
+        PromptSuggestion.service_id == service_id).with_for_update().execution_options(populate_existing=True))
+    if row is None:
+        raise ApiError(404, 'RESOURCE_NOT_FOUND', '수정 제안을 찾을 수 없습니다.')
+    if row.snapshot['promptId'] != prompt.id or row.base_version_id != body.baseVersionId:
+        raise ApiError(409, 'SUGGESTION_PROMPT_MISMATCH', '수정 제안의 원본 프롬프트를 확인하세요.')
+    application_hash = digest(body.model_dump())
+    if row.status == 'APPLIED':
+        if row.application_hash != application_hash:
+            raise ApiError(409, 'SUGGESTION_ALREADY_APPLIED', '이미 적용한 수정 제안입니다.')
+        return get_version(db, service_id, row.applied_version_id)
+    if row.status != 'READY' or row.revision != body.suggestionRevision:
+        raise ApiError(409, 'SUGGESTION_CONFLICT', '최신 수정 제안 상태와 revision을 확인하세요.')
+    if not row.selected_ids:
+        raise ApiError(409, 'SUGGESTION_SELECTION_REQUIRED', '적용할 수정안을 선택하세요.')
+    if body.content != preview(row):
+        raise ApiError(409, 'SUGGESTION_CONTENT_MISMATCH', '선택한 수정안의 previewContent를 그대로 저장하세요.')
+    current = source_snapshot(db, service_id, SuggestionCreate(evaluationId=row.evaluation_id,
+        baseVersionId=row.base_version_id, itemIds=row.snapshot['itemIds']), lock=True)
+    if current['sourceHash'] != row.snapshot['sourceHash']:
+        raise ApiError(409, 'SUGGESTION_EVIDENCE_CHANGED', '원본 분석 또는 사람 검토가 바뀌었습니다. 새 제안을 생성하세요.')
+    guarded_update(db, row, body.suggestionRevision, status='APPLIED', application_hash=application_hash)
+    version = save_version(db, service_id, prompt, body)
+    db.execute(update(PromptSuggestion).where(PromptSuggestion.id == row.id).values(applied_version_id=version.id))
+    return version
