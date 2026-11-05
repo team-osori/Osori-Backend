@@ -237,3 +237,46 @@ def test_email_validation_and_legacy_id_contract(db_and_client):
     duplicate = client.post('/api/auth/signup', json={'email': 'qa@example.com', 'name': 'Test', 'password': password})
     assert duplicate.status_code == 409 and duplicate.json()['error']['code'] == 'EMAIL_ALREADY_EXISTS'
     assert client.post('/api/auth/login', json={'email': 'QA@EXAMPLE.COM', 'password': password}).status_code == 200
+
+
+def test_legacy_email_link_preserves_projects_and_checks_original_credentials(db_and_client):
+    """A legacy account keeps its identity and projects when an email is attached once."""
+    from app.models.project import Project
+    from app.services.auth import password_hash
+    sessions, client = db_and_client
+    with sessions() as db:
+        db.add(User(id='legacy-user', login_id='legacy_id', email=None, name='Legacy',
+                    password_hash=password_hash.hash('secure-password-123'), created_at=now()))
+        db.add(Project(id='legacy-project', owner_id='legacy-user', name='Project', revision=1,
+                       created_at=now(), updated_at=now()))
+        db.commit()
+    body = {'loginId': 'LEGACY_ID', 'password': 'secure-password-123', 'email': 'Legacy@Example.com'}
+    wrong = client.post('/api/auth/legacy-email-link', json={**body, 'password': 'wrong-password-123'})
+    assert wrong.status_code == 401
+    with sessions() as db:
+        assert db.get(User, 'legacy-user').email is None
+    linked = client.post('/api/auth/legacy-email-link', json=body)
+    assert linked.status_code == 200 and linked.json()['data']['id'] == 'legacy-user'
+    assert linked.json()['data']['email'] == 'legacy@example.com'
+    assert client.post('/api/auth/legacy-email-link', json=body).status_code == 401
+    login = client.post('/api/auth/login', json={'email': 'legacy@example.com', 'password': body['password']})
+    assert login.status_code == 200
+    headers = {'Authorization': 'Bearer ' + login.json()['data']['accessToken']}
+    assert client.get('/api/projects/legacy-project', headers=headers).status_code == 200
+
+
+def test_legacy_email_link_rejects_an_existing_email(db_and_client):
+    """An existing email cannot be reassigned to a legacy account."""
+    from app.services.auth import password_hash
+    sessions, client = db_and_client
+    body = {'email': 'claimed@example.com', 'name': 'Existing', 'password': 'secure-password-123'}
+    assert client.post('/api/auth/signup', json=body).status_code == 201
+    with sessions() as db:
+        db.add(User(id='legacy', login_id='legacy_id', email=None, name='Legacy',
+                    password_hash=password_hash.hash(body['password']), created_at=now()))
+        db.commit()
+    response = client.post('/api/auth/legacy-email-link', json={'loginId': 'legacy_id',
+        'password': body['password'], 'email': body['email']})
+    assert response.status_code == 409 and response.json()['error']['code'] == 'EMAIL_ALREADY_EXISTS'
+    with sessions() as db:
+        assert db.get(User, 'legacy').email is None

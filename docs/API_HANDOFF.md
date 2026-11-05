@@ -21,6 +21,7 @@ MySQL 데이터베이스는 미리 생성해야 합니다. 비밀번호의 특�
 | --- | --- | --- |
 | POST | `/api/auth/signup` | `email`, `name`, `password`로 가입. 201 |
 | GET | `/api/auth/email-availability?email=...` | 이메일 사용 가능 여부 |
+| POST | `/api/auth/legacy-email-link` | 기존 `loginId`, `password`와 새 `email`을 받아 계정에 이메일 연결 |
 | POST | `/api/auth/login` | `email`, `password`. `user`, `accessToken`, `refreshToken` 반환 |
 | GET | `/api/auth/me` | Bearer 액세스 토큰으로 내 정보 조회 |
 | POST | `/api/auth/refresh` | `refreshToken`으로 새 토큰 쌍 발급 |
@@ -174,4 +175,4 @@ OSORI_TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/osori_test?ch
 
 ## 이메일 전환
 
-신규 가입과 로그인은 이메일만 사용합니다. 기존 login_id와 프로젝트는 보존하고 기존 계정의 이메일은 null로 둡니다. 기존 사용자는 이메일 연결 전 새 로그인 API를 사용할 수 없습니다. 연결 절차는 아직 결정되지 않았습니다. 이메일이 저장된 DB는 이메일을 이전하기 전 마이그레이션을 내릴 수 없습니다.
+신규 가입과 로그인은 이메일만 사용합니다. 기존 login_id와 프로젝트는 보존하고 기존 계정의 이메일은 null로 둡니다. 기존 사용자는 기존 loginId와 비밀번호, 새 이메일로 `legacy-email-link`를 호출한 후 이메일 로그인할 수 있습니다. 계정 ID와 프로젝트·멤버십은 유지됩니다. 이메일은 최초 한 번만 연결하고 중복 주소는 거부합니다. 이메일 소유권 확인은 제공하지 않습니다. 따라서 다른 사람의 이메일로 가입하거나 연결할 수 있고 이메일 기반 프로젝트 초대는 소유자를 보장하지 않습니다. 이메일이 저장된 DB는 이메일을 이전하기 전 마이그레이션을 내릴 수 없습니다.

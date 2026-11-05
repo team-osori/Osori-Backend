@@ -57,6 +57,14 @@ class LoginRequest(BaseModel):
         return value
 
 
+class LegacyEmailLink(BaseModel):
+    """Credentials for a legacy account and the email to attach to it."""
+    model_config = ConfigDict(extra='forbid')
+    loginId: Annotated[str, Field(min_length=4, max_length=30, pattern=r'^[A-Za-z][A-Za-z0-9_]*$'), AfterValidator(str.lower)]
+    password: Password
+    email: Email
+
+
 class RefreshRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     refreshToken: Token

@@ -2,7 +2,7 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query, Request, Response
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -13,7 +13,7 @@ from app.api.dependencies import get_current_user
 from app.models.auth import User
 from app.models.project import Project, ProjectMember
 from app.schemas.membership import ProjectRole
-from app.schemas.auth import Email, LoginRequest, RefreshRequest, SignupRequest
+from app.schemas.auth import Email, LegacyEmailLink, LoginRequest, RefreshRequest, SignupRequest
 from app.services import auth, rate_limit
 
 from app.schemas.responses import Data, UserResponse, Availability, LoginResponse, TokenPair, ERROR_RESPONSES
@@ -54,6 +54,30 @@ def email_availability(db: Db, email: Annotated[Email, Query()]):
     """Check whether a normalized email is available."""
     exists = db.scalar(select(User.id).where(User.email == email)) is not None
     return {'data': {'email': email, 'available': not exists}}
+
+
+@router.post('/legacy-email-link', response_model=Data[UserResponse])
+def link_legacy_email(body: LegacyEmailLink, db: Db, request: Request):
+    """Attach an email once after authenticating the original legacy account."""
+    enforce_rate_limit(request, db, 'login', AUTH_LOGIN_RATE_LIMIT)
+    user = db.scalar(select(User).where(User.login_id == body.loginId, User.email.is_(None)))
+    valid = auth.password_hash.verify(body.password, user.password_hash if user else auth.DUMMY_HASH)
+    if user is None or not valid:
+        raise ApiError(401, 'INVALID_CREDENTIALS', '기존 계정 정보가 올바르지 않습니다.')
+    try:
+        changed = db.execute(update(User).where(User.id == user.id, User.email.is_(None))
+            .values(email=body.email).execution_options(synchronize_session=False))
+        if changed.rowcount != 1:
+            db.rollback()
+            raise ApiError(409, 'EMAIL_LINK_CONFLICT', '이미 이메일이 연결된 계정입니다.')
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        if db.scalar(select(User.id).where(User.email == body.email)) is None:
+            raise
+        raise ApiError(409, 'EMAIL_ALREADY_EXISTS', '이미 사용 중인 이메일입니다.') from None
+    db.refresh(user)
+    return {'data': auth.user_data(user)}
 
 
 def enforce_rate_limit(request: Request, db: Session, route: str, limit: int):
