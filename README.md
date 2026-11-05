@@ -52,3 +52,5 @@ OSORI_TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/osori_test?ch
 ```
 
 사용된 리프레시 토큰의 해시는 해당 세션이 삭제될 때 함께 삭제됩니다. 만료된 세션은 `.venv/bin/python -m app.maintenance`로 정리합니다. 자동 실행 예약은 별도로 구성해야 합니다. 프론트엔드: [Osori-Frontend](https://github.com/team-osori/Osori-Frontend)
+
+프롬프트 수정 제안의 생성·선택·버전 저장·재시험·비교 연동과 추정 한계는 [수정 제안 인계](docs/PROMPT_IMPROVEMENT_HANDOFF.md)를 참고하세요.

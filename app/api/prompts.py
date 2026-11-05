@@ -2,12 +2,10 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Response
 from sqlalchemy import select, update
-from sqlalchemy.exc import OperationalError
 
 from app.api.dependencies import Db, IfMatch, OwnedService, ResourceId
 from app.api.projects import iso
 from app.core.errors import ApiError
-from app.core.concurrency import is_write_conflict
 from app.core.pagination import Cursor, Limit, page_query
 from app.models.prompt import Prompt, PromptVersion
 from app.schemas.prompt import (PromptCreate, PromptResponse, PromptSummary,
@@ -15,7 +13,7 @@ from app.schemas.prompt import (PromptCreate, PromptResponse, PromptSummary,
 from app.schemas.policy import Rename
 from app.schemas.responses import Data, ERROR_RESPONSES, Page
 from app.services.auth import now
-from app.services.prompts import get_prompt, get_version
+from app.services.prompts import get_prompt, get_version, new_version, save_version
 from app.services.version_pagination import version_page
 
 router = APIRouter(prefix='/api/projects/{projectId}/services/{serviceId}/prompts',
@@ -32,12 +30,6 @@ def prompt_data(p: Prompt, v: PromptVersion) -> dict:
     return {'id': p.id, 'serviceId': p.service_id, 'name': p.name, 'revision': p.revision,
             'currentVersionId': p.current_version_id, 'currentVersion': version_data(v),
             'createdAt': iso(p.created_at), 'updatedAt': iso(p.updated_at)}
-
-
-def new_version(body, prompt_id, number, version_id=None):
-    return PromptVersion(id=version_id or str(uuid4()), prompt_id=prompt_id, version=number,
-        content=body.content, label=body.label, change_note=body.changeNote,
-        external_version_ref=body.externalVersionRef, created_at=now())
 
 
 @router.post('', status_code=201, response_model=Data[PromptResponse])
@@ -76,25 +68,11 @@ def prompt_detail(promptId: ResourceId, service: OwnedService, db: Db):
 def create_version(promptId: ResourceId, body: PromptVersionCreate, service: OwnedService,
                    db: Db, response: Response):
     prompt = get_prompt(db, service.id, promptId)
-    if prompt.current_version_id != body.baseVersionId:
-        raise ApiError(409, 'PROMPT_VERSION_CONFLICT', '최신 버전을 기준으로 저장해 주세요.')
-    previous = get_version(db, service.id, prompt.current_version_id)
-    if previous.content == body.content and previous.external_version_ref == body.externalVersionRef:
-        raise ApiError(409, 'NO_CHANGES', '원문 또는 외부 버전 참조를 변경해 주세요.')
-    version = new_version(body, prompt.id, previous.version + 1)
-    try:
-        changed = db.execute(update(Prompt).where(Prompt.id == prompt.id,
-            Prompt.current_version_id == body.baseVersionId, Prompt.deleted.is_(False)).values(current_version_id=version.id,
-            revision=Prompt.revision + 1, updated_at=now()))
-    except OperationalError as exc:
-        db.rollback()
-        if is_write_conflict(exc):
-            raise ApiError(409, 'PROMPT_VERSION_CONFLICT', '다른 수정본이 먼저 저장되었습니다.') from None
-        raise
-    if changed.rowcount != 1:
-        db.rollback()
-        raise ApiError(409, 'PROMPT_VERSION_CONFLICT', '다른 수정본이 먼저 저장되었습니다.')
-    db.add(version)
+    if body.suggestionId:
+        from app.services.prompt_suggestions import apply_suggestions
+        version = apply_suggestions(db, service.id, prompt, body)
+    else:
+        version = save_version(db, service.id, prompt, body)
     db.commit()
     db.refresh(version)
     response.headers['Location'] = f'/api/projects/{service.project_id}/services/{service.id}/prompts/{prompt.id}/versions/{version.id}'

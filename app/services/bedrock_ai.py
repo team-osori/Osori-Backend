@@ -31,15 +31,18 @@ class BedrockQuestionGenerator:
     def __init__(self, model, region):
         self.model, self.region = model, region
 
-    def generate(self, *, policies, count, categories=None):
-        selected = categories or ['normal', 'exception', 'boundary'][:min(count, 3)]
+    def generate(self, *, policies, count, categories=None, category_counts=None):
+        selected = [k for k, v in category_counts.items() if v] if category_counts is not None else categories or ['normal', 'exception', 'boundary'][:min(count, 3)]
+        payload = {'policies': policies, 'count': count, 'categories': selected}
+        if category_counts is not None:
+            payload['categoryCounts'] = category_counts
         try:
             output = runtime.converse_json(model=self.model, region=self.region,
-                instructions=GENERATION_INSTRUCTIONS, payload={'policies': policies, 'count': count, 'categories': selected},
+                instructions=GENERATION_INSTRUCTIONS, payload=payload,
                 schema=generation_schema(), name='submit_questions', max_tokens=min(32000, 1000 + count * 1400),
                 read_timeout=55)
             generated = GeneratedQuestions.model_validate(output)
-            return validate_generated_questions(generated, count, selected)
+            return validate_generated_questions(generated, count, selected, category_counts)
         except runtime.BedrockError as exc:
             code = 'GENERATION_SCHEMA_INVALID' if exc.code == 'INVALID_OUTPUT' else 'GENERATION_' + exc.code
             status = 400 if exc.code == 'INPUT_TOO_LARGE' else 504 if exc.code == 'TIMEOUT' else (
