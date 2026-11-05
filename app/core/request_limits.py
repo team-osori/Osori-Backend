@@ -5,10 +5,12 @@ class AuthRequestLimits:
     """Limit JSON auth request bodies without buffering unbounded input."""
 
     def __init__(self, app, max_bytes: int = 1024 * 1024):
+        """Initialize the state required by this middleware or domain error."""
         self.app = app
         self.max_bytes = max_bytes
 
     async def __call__(self, scope, receive, send):
+        """Apply this HTTP middleware while preserving non-HTTP ASGI traffic."""
         if scope['type'] != 'http' or scope['method'] not in ('POST', 'PUT', 'PATCH') or not scope['path'].startswith('/api/'):
             await self.app(scope, receive, send)
             return
@@ -31,6 +33,7 @@ class AuthRequestLimits:
         delivered = False
 
         async def replay():
+            """Replay the bounded request body once to downstream JSON parsing."""
             nonlocal delivered
             if not delivered:
                 delivered = True

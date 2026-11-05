@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 
 def register(client, login):
+    """Create a distinct test user and obtain credentials for protected API checks."""
     credentials = {'loginId': login, 'password': 'secure-password-123'}
     assert client.post('/api/auth/signup', json={**credentials, 'name': 'Test'}).status_code == 201
     data = client.post('/api/auth/login', json=credentials).json()['data']
@@ -9,6 +10,7 @@ def register(client, login):
 
 
 def test_projects_and_ownership(db_and_client):
+    """Verify projects and ownership against the observable API or database contract."""
     _, client = db_and_client
     owner = register(client, 'owner')
     other = register(client, 'other')
@@ -40,6 +42,7 @@ def test_projects_and_ownership(db_and_client):
 
 
 def test_pagination_and_invalid_inputs(db_and_client):
+    """Verify pagination and invalid inputs against the observable API or database contract."""
     _, client = db_and_client
     headers = register(client, 'owner')
     other = register(client, 'other')
@@ -68,6 +71,7 @@ def test_pagination_and_invalid_inputs(db_and_client):
 
 
 def test_common_errors(db_and_client):
+    """Verify common errors against the observable API or database contract."""
     _, client = db_and_client
     missing = client.get('/api/does-not-exist')
     assert missing.status_code == 404
@@ -75,6 +79,7 @@ def test_common_errors(db_and_client):
     from app.api.dependencies import get_current_user
 
     def broken():
+        """Simulate an internal failure to verify sensitive details stay out of responses."""
         raise RuntimeError('secret-content-must-not-leak')
 
     from app.main import app
@@ -87,6 +92,7 @@ def test_common_errors(db_and_client):
 
 
 def test_openapi_and_cors(db_and_client):
+    """Verify openapi and cors against the observable API or database contract."""
     _, client = db_and_client
     schema = client.get('/openapi.json').json()
     assert 'HTTPBearer' in schema['components']['securitySchemes']

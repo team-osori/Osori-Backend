@@ -18,6 +18,7 @@ engine = create_engine(
 if DATABASE_URL.startswith('sqlite'):
     @event.listens_for(engine, 'connect')
     def enable_sqlite_foreign_keys(dbapi_connection, connection_record):
+        """Enable foreign-key cascades for SQLite test and development connections."""
         cursor = dbapi_connection.cursor()
         cursor.execute('PRAGMA foreign_keys=ON')
         cursor.close()
@@ -26,5 +27,6 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
 def get_db() -> Generator[Session, None, None]:
+    """Provide one request-scoped transaction session and close it even after errors."""
     with SessionLocal() as session:
         yield session

@@ -17,6 +17,7 @@ ResourceId = Annotated[str, Path(min_length=1, max_length=100, pattern=r'^[A-Za-
 
 
 def get_current_user(db: Db, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> User:
+    """Reject missing, revoked, or expired bearer credentials before accessing protected data."""
     user = user_from_access(db, credentials.credentials) if credentials and credentials.scheme.lower() == 'bearer' else None
     if user is None:
         raise ApiError(401, 'UNAUTHORIZED', '인증이 필요합니다.', {'WWW-Authenticate': 'Bearer'})
@@ -27,6 +28,7 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
 def require_project_owner(projectId: ResourceId, user: CurrentUser, db: Db) -> Project:
+    """Hide missing and other-owned projects behind the same not-found response."""
     project = db.scalar(select(Project).where(Project.id == projectId, Project.owner_id == user.id))
     if project is None:
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '프로젝트를 찾을 수 없습니다.')

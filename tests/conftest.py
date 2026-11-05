@@ -13,15 +13,18 @@ from app.main import app
 
 @pytest.fixture
 def db_and_client():
+    """Provide an isolated database-backed API client and release resources after the test."""
     engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
     @event.listens_for(engine, 'connect')
     def enable_foreign_keys(connection, _):
+        """Configure the isolated test database without touching the developer database."""
         connection.execute('PRAGMA foreign_keys=ON')
 
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     def override_db():
+        """Configure the isolated test database without touching the developer database."""
         with session_factory() as session:
             yield session
 

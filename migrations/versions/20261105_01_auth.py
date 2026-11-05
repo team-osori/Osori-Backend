@@ -9,6 +9,7 @@ depends_on = None
 
 
 def upgrade():
+    """Apply this revision's schema changes in dependency order."""
     login_id = sa.String(30).with_variant(sa.String(30, collation='utf8mb4_bin'), 'mysql')
     op.create_table(
         'users', sa.Column('id', sa.String(36), primary_key=True),
@@ -38,6 +39,7 @@ def upgrade():
 
 
 def downgrade():
+    """Revert this revision's schema changes in reverse dependency order."""
     op.drop_table('auth_rate_windows')
     op.drop_table('auth_sessions')
     op.drop_table('users')

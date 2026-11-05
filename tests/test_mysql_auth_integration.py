@@ -22,6 +22,7 @@ from app.services import auth
 
 @pytest.fixture
 def mysql_client():
+    """Provide an isolated database-backed API client and release resources after the test."""
     url = os.environ.get('OSORI_TEST_MYSQL_URL')
     if not url:
         pytest.skip('OSORI_TEST_MYSQL_URL is not set')
@@ -32,6 +33,7 @@ def mysql_client():
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
 
     def override():
+        """Configure the isolated test database without touching the developer database."""
         with sessions() as db:
             yield db
 
@@ -43,6 +45,7 @@ def mysql_client():
 
 
 def signup_and_login(client):
+    """Create a distinct test user and obtain credentials for protected API checks."""
     login_id = 'u' + uuid4().hex[:20]
     password = 'integration-password-123'
     assert client.post('/api/auth/signup', json={'loginId': login_id, 'name': 'test', 'password': password}).status_code == 201
@@ -52,11 +55,13 @@ def signup_and_login(client):
 
 
 def test_mysql_concurrent_refresh_reuse(mysql_client):
+    """Verify mysql concurrent refresh reuse against the observable API or database contract."""
     client, _, _, _ = mysql_client
     tokens = signup_and_login(client)
     barrier = Barrier(2)
 
     def refresh():
+        """Apply the refresh budget before performing token rotation or replay detection."""
         barrier.wait(timeout=10)
         return client.post('/api/auth/refresh', json={'refreshToken': tokens['refreshToken']})
 
@@ -70,6 +75,7 @@ def test_mysql_concurrent_refresh_reuse(mysql_client):
 
 
 def test_mysql_expiry_boundary(mysql_client, monkeypatch):
+    """Verify mysql expiry boundary against the observable API or database contract."""
     client, sessions, _, _ = mysql_client
     tokens = signup_and_login(client)
     instant = datetime(2026, 1, 1, tzinfo=UTC)
@@ -86,6 +92,7 @@ def test_mysql_expiry_boundary(mysql_client, monkeypatch):
 
 
 def test_mysql_token_survives_fresh_server_process(mysql_client):
+    """Verify mysql token survives fresh server process against the observable API or database contract."""
     client, _, env, root = mysql_client
     tokens = signup_and_login(client)
     script = """
@@ -107,6 +114,7 @@ with TestClient(app) as client:
 
 
 def test_mysql_refresh_just_before_expiry(mysql_client, monkeypatch):
+    """Verify mysql refresh just before expiry against the observable API or database contract."""
     client, sessions, _, _ = mysql_client
     tokens = signup_and_login(client)
     instant = datetime(2026, 1, 1, tzinfo=UTC)
@@ -120,6 +128,7 @@ def test_mysql_refresh_just_before_expiry(mysql_client, monkeypatch):
 
 
 def test_mysql_project_ownership_and_concurrent_chatbot_registration(mysql_client):
+    """Verify mysql project ownership and concurrent chatbot registration against the observable API or database contract."""
     client, _, _, _ = mysql_client
     owner = signup_and_login(client)
     other = signup_and_login(client)
@@ -132,6 +141,7 @@ def test_mysql_project_ownership_and_concurrent_chatbot_registration(mysql_clien
     barrier = Barrier(2)
 
     def register():
+        """Create a distinct test user and obtain credentials for protected API checks."""
         barrier.wait(timeout=10)
         return client.post(path + '/services', json={'name': '상담 챗봇'}, headers=headers)
 
@@ -145,6 +155,7 @@ def test_mysql_project_ownership_and_concurrent_chatbot_registration(mysql_clien
 
 
 def test_mysql_project_pagination(mysql_client):
+    """Verify mysql project pagination against the observable API or database contract."""
     client, _, _, _ = mysql_client
     tokens = signup_and_login(client)
     headers = {'Authorization': 'Bearer ' + tokens['accessToken']}
@@ -170,6 +181,7 @@ def test_mysql_project_pagination(mysql_client):
 
 
 def test_mysql_expired_session_cleanup_cascades_history(mysql_client):
+    """Verify mysql expired session cleanup cascades history against the observable API or database contract."""
     from app.maintenance import cleanup_expired
     from app.models.auth import UsedRefreshToken
     client, sessions, _, _ = mysql_client
@@ -185,3 +197,32 @@ def test_mysql_expired_session_cleanup_cascades_history(mysql_client):
         assert cleanup_expired(db)['sessions'] >= 1
         assert db.scalar(select(UsedRefreshToken).where(UsedRefreshToken.session_id == session_id)) is None
     assert client.get('/api/auth/me', headers={'Authorization': 'Bearer ' + new['accessToken']}).status_code == 401
+
+
+def test_mysql_session_lifecycle_bounds(mysql_client, monkeypatch):
+    """Enforce the final refresh count and absolute deadline in MySQL transactions."""
+    from app.models.auth import UsedRefreshToken
+    client, sessions, _, _ = mysql_client
+    tokens = signup_and_login(client)
+    with sessions() as db:
+        row = db.scalar(select(AuthSession).where(AuthSession.refresh_hash == auth.digest(tokens['refreshToken'])))
+        row.refresh_count = auth.AUTH_SESSION_MAX_REFRESHES - 1
+        session_id = row.id
+        db.commit()
+    response = client.post('/api/auth/refresh', json={'refreshToken': tokens['refreshToken']})
+    assert response.status_code == 200
+    newest = response.json()['data']
+    assert client.post('/api/auth/refresh', json={'refreshToken': newest['refreshToken']}).status_code == 401
+    with sessions() as db:
+        assert db.scalar(select(UsedRefreshToken).where(UsedRefreshToken.session_id == session_id)) is None
+    tokens = signup_and_login(client)
+    instant = datetime(2026, 1, 1, tzinfo=UTC)
+    with sessions() as db:
+        row = db.scalar(select(AuthSession).where(AuthSession.refresh_hash == auth.digest(tokens['refreshToken'])))
+        row.absolute_expires_at = instant
+        row.access_expires_at = instant + timedelta(days=1)
+        row.refresh_expires_at = instant + timedelta(days=1)
+        db.commit()
+    monkeypatch.setattr(auth, 'now', lambda: instant)
+    assert client.get('/api/auth/me', headers={'Authorization': 'Bearer ' + tokens['accessToken']}).status_code == 401
+    assert client.post('/api/auth/refresh', json={'refreshToken': tokens['refreshToken']}).status_code == 401

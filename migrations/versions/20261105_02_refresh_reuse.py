@@ -9,6 +9,7 @@ depends_on = None
 
 
 def upgrade():
+    """Apply this revision's schema changes in dependency order."""
     op.create_table(
         'used_refresh_tokens',
         sa.Column('token_hash', sa.String(64), primary_key=True),
@@ -18,4 +19,5 @@ def upgrade():
 
 
 def downgrade():
+    """Revert this revision's schema changes in reverse dependency order."""
     op.drop_table('used_refresh_tokens')

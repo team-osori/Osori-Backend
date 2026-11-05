@@ -7,6 +7,7 @@ from app.services.auth import digest, now
 
 
 def test_auth_lifecycle(db_and_client):
+    """Verify auth lifecycle against the observable API or database contract."""
     sessions, client = db_and_client
     signup = {'loginId': 'osori_dev', 'name': '담당자', 'password': 'secure-password-123'}
     assert client.get('/api/auth/login-id-availability', params={'loginId': signup['loginId']}).json()['data']['available'] is True
@@ -38,6 +39,7 @@ def test_auth_lifecycle(db_and_client):
 
 
 def test_errors_and_expiration(db_and_client):
+    """Verify errors and expiration against the observable API or database contract."""
     sessions, client = db_and_client
     assert client.post('/api/auth/signup', json={'loginId': 'x', 'name': 'a', 'password': 'short'}).status_code == 400
     signup = {'loginId': 'tester', 'name': 'Test', 'password': 'secure-password-123'}
@@ -60,6 +62,7 @@ def test_errors_and_expiration(db_and_client):
 
 
 def test_sessions_are_independent_and_invalid_tokens_are_rejected(db_and_client):
+    """Verify sessions are independent and invalid tokens are rejected against the observable API or database contract."""
     _, client = db_and_client
     signup = {'loginId': 'tester', 'name': 'Test', 'password': 'secure-password-123'}
     assert client.post('/api/auth/signup', json=signup).status_code == 201
@@ -76,6 +79,7 @@ def test_sessions_are_independent_and_invalid_tokens_are_rejected(db_and_client)
 
 
 def test_signup_common_rules_and_body_limits(db_and_client):
+    """Verify signup common rules and body limits against the observable API or database contract."""
     _, client = db_and_client
     body = {'loginId': 'tester', 'name': '  담당자  ', 'password': ' secure-password-123 '}
     response = client.post('/api/auth/signup', json=body)
@@ -90,6 +94,7 @@ def test_signup_common_rules_and_body_limits(db_and_client):
 
 
 def test_login_id_is_normalized(db_and_client):
+    """Verify login id is normalized against the observable API or database contract."""
     _, client = db_and_client
     signup = {'loginId': 'Osori_DEV', 'name': 'Test', 'password': 'secure-password-123'}
     response = client.post('/api/auth/signup', json=signup)
@@ -101,6 +106,7 @@ def test_login_id_is_normalized(db_and_client):
 
 
 def test_error_details_and_request_id(db_and_client):
+    """Verify error details and request id against the observable API or database contract."""
     _, client = db_and_client
     response = client.post('/api/auth/signup', json={'loginId': 'tester', 'password': 'secure-password-123'})
     assert response.status_code == 400
@@ -114,6 +120,7 @@ def test_error_details_and_request_id(db_and_client):
 
 
 def test_login_and_refresh_rate_limits(db_and_client, monkeypatch):
+    """Verify login and refresh rate limits against the observable API or database contract."""
     from app.api import auth as auth_api
     from app.services import rate_limit
 
@@ -135,6 +142,7 @@ def test_login_and_refresh_rate_limits(db_and_client, monkeypatch):
 
 
 def test_refresh_reuse_revokes_only_the_affected_session(db_and_client):
+    """Verify refresh reuse revokes only the affected session against the observable API or database contract."""
     _, client = db_and_client
     signup = {'loginId': 'tester', 'name': 'Test', 'password': 'secure-password-123'}
     client.post('/api/auth/signup', json=signup)
@@ -149,6 +157,7 @@ def test_refresh_reuse_revokes_only_the_affected_session(db_and_client):
 
 
 def test_cleanup_expired_preserves_active_sessions(db_and_client):
+    """Verify cleanup expired preserves active sessions against the observable API or database contract."""
     from app.maintenance import cleanup_expired
     from app.models.auth import UsedRefreshToken
     sessions, client = db_and_client
@@ -164,3 +173,52 @@ def test_cleanup_expired_preserves_active_sessions(db_and_client):
         assert cleanup_expired(db)['sessions'] == 1
         assert db.scalar(select(UsedRefreshToken)) is None
     assert client.get('/api/auth/me', headers={'Authorization': 'Bearer ' + active['accessToken']}).status_code == 200
+
+
+def test_signup_throttles_before_hashing_or_creating_user(db_and_client, monkeypatch):
+    """A denied signup must not incur password hashing or create another account."""
+    from app.api import auth as auth_api
+    from app.services import auth
+    monkeypatch.setattr(auth_api, 'AUTH_SIGNUP_RATE_LIMIT', 1)
+    sessions, client = db_and_client
+    body = {'loginId': 'first_user', 'name': 'Test', 'password': 'secure-password-123'}
+    assert client.post('/api/auth/signup', json=body).status_code == 201
+
+    def unexpected_hash(*args, **kwargs):
+        """Fail if a throttled request reaches expensive password hashing."""
+        raise AssertionError('Hashing must not run after the signup budget is exhausted')
+
+    monkeypatch.setattr(auth.password_hash, 'hash', unexpected_hash)
+    response = client.post('/api/auth/signup', json={**body, 'loginId': 'second_user'})
+    assert response.status_code == 429
+    assert int(response.headers['retry-after']) > 0
+    with sessions() as db:
+        assert db.scalar(select(User).where(User.login_id == 'second_user')) is None
+
+
+def test_absolute_session_expiry_and_refresh_budget(db_and_client, monkeypatch):
+    """Repeated refreshes cannot extend a session forever or retain unlimited history."""
+    from datetime import UTC, datetime
+    from app.services import auth
+    from app.models.auth import UsedRefreshToken
+    sessions, client = db_and_client
+    current = datetime(2026, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr(auth, 'now', lambda: current)
+    monkeypatch.setattr(auth, 'AUTH_SESSION_MAX_DAYS', 1)
+    monkeypatch.setattr(auth, 'AUTH_SESSION_MAX_REFRESHES', 1)
+    body = {'loginId': 'tester', 'name': 'Test', 'password': 'secure-password-123'}
+    client.post('/api/auth/signup', json=body)
+    credentials = {'loginId': body['loginId'], 'password': body['password']}
+    tokens = client.post('/api/auth/login', json=credentials).json()['data']
+    rotated = client.post('/api/auth/refresh', json={'refreshToken': tokens['refreshToken']}).json()['data']
+    with sessions() as db:
+        session = db.scalar(select(AuthSession))
+        assert session.refresh_count == 1
+        assert session.refresh_expires_at.replace(tzinfo=UTC) == current + timedelta(days=1)
+    assert client.post('/api/auth/refresh', json={'refreshToken': rotated['refreshToken']}).status_code == 401
+    with sessions() as db:
+        assert db.scalar(select(UsedRefreshToken)) is None
+    tokens = client.post('/api/auth/login', json=credentials).json()['data']
+    monkeypatch.setattr(auth, 'now', lambda: current + timedelta(days=1))
+    assert client.get('/api/auth/me', headers={'Authorization': 'Bearer ' + tokens['accessToken']}).status_code == 401
+    assert client.post('/api/auth/refresh', json={'refreshToken': tokens['refreshToken']}).status_code == 401

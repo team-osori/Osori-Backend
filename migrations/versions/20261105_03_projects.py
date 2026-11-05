@@ -9,6 +9,7 @@ depends_on = None
 
 
 def upgrade():
+    """Apply this revision's schema changes in dependency order."""
     op.create_table('projects',
         sa.Column('id', sa.String(36), primary_key=True),
         sa.Column('owner_id', sa.String(36), sa.ForeignKey('users.id'), nullable=False),
@@ -31,5 +32,6 @@ def upgrade():
 
 
 def downgrade():
+    """Revert this revision's schema changes in reverse dependency order."""
     op.drop_table('services')
     op.drop_table('projects')

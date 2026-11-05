@@ -10,6 +10,7 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline():
+    """Generate migration SQL using the configured database dialect."""
     context.configure(url=DATABASE_URL, target_metadata=target_metadata, literal_binds=True,
                       dialect_opts={'paramstyle': 'named'})
     with context.begin_transaction():
@@ -17,6 +18,7 @@ def run_migrations_offline():
 
 
 def run_migrations_online():
+    """Apply schema migrations through a dedicated non-pooled connection."""
     configuration = config.get_section(config.config_ini_section) or {}
     configuration['sqlalchemy.url'] = DATABASE_URL
     connectable = engine_from_config(configuration, prefix='sqlalchemy.', poolclass=pool.NullPool)

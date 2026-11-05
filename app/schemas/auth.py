@@ -16,11 +16,13 @@ class SignupRequest(BaseModel):
     @field_validator('name', mode='before')
     @classmethod
     def trim_name(cls, value):
+        """Normalize names before enforcing their length constraints."""
         return value.strip() if isinstance(value, str) else value
 
     @field_validator('name', 'password')
     @classmethod
     def not_blank(cls, value: str) -> str:
+        """Reject whitespace-only credentials without altering their original characters."""
         if not value.strip():
             raise ValueError('공백만 입력할 수 없습니다.')
         return value
@@ -34,6 +36,7 @@ class LoginRequest(BaseModel):
     @field_validator('password')
     @classmethod
     def not_blank(cls, value: str) -> str:
+        """Reject whitespace-only credentials without altering their original characters."""
         if not value.strip():
             raise ValueError('공백만 입력할 수 없습니다.')
         return value
@@ -46,6 +49,7 @@ class RefreshRequest(BaseModel):
     @field_validator('refreshToken')
     @classmethod
     def not_blank(cls, value: str) -> str:
+        """Reject whitespace-only credentials without altering their original characters."""
         if not value.strip():
             raise ValueError('공백만 입력할 수 없습니다.')
         return value

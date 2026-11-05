@@ -11,11 +11,13 @@ class ProjectCreate(BaseModel):
     @field_validator('name', 'description', mode='before')
     @classmethod
     def trim(cls, value):
+        """Trim display text while leaving non-string values for type validation."""
         return value.strip() if isinstance(value, str) else value
 
     @field_validator('description')
     @classmethod
     def nonblank_description(cls, value):
+        """Permit absent descriptions but reject an explicitly blank description."""
         if value is not None and not value:
             raise ValueError('설명은 공백만 입력할 수 없습니다.')
         return value
