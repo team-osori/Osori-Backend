@@ -20,7 +20,7 @@
 단일 요약의 각 기준에서 `b`, `comparison`은 null이므로 미호출 B를 실패로 집계하지 않는다.
 기존 저장된 mode 없는 스냅샷은 A/B 평가로 해석한다.
 
-판정 AI가 비활성화되어 있거나 키가 없으면 `JUDGE_NOT_CONFIGURED`로 표시한다.
+판정 AI 제공사가 비활성화되어 있으면 `JUDGE_NOT_CONFIGURED`로 표시한다.
 답변 수집 완료와 판정 가능 여부는 별도로 표현하며 임의 점수를 생성하지 않는다.
 
 ## 기대 조건별 판정 및 채점 프로파일
@@ -61,7 +61,7 @@ requirement/criterion/sourceQuote 필드로 정규화하며 A의 원본 레코�
 조건 누락·중복·타 문항/조건/근거 참조, 점수와 verdict 모순, 정책 조건과 정책 요약 모순은
 `INVALID_JUDGE_OUTPUT`이며 판정 실패로 기록한다. 검색 자료가 없다는 이유로 정책 자체 판정을 지우지 않는다.
 
-실제 OpenAI Responses 판정 어댑터를 제공한다. 명시적으로 활성화하지 않으면
+실제 Bedrock Converse 판정 어댑터를 제공한다. 명시적으로 활성화하지 않으면
 기본 어댑터가 모든 기준과 조건을 미판정으로 반환한다. 테스트는 외부 호출을 비활성화한다.
 
 ## 오류 상세와 결과 탐색
@@ -154,25 +154,22 @@ A의 legacy_conditions 규칙으로 기대 행동 및 모든 금지 행동에 �
 
 ## 실제 판정 AI 설정
 
-```dotenv
-EVALUATION_JUDGE_PROVIDER=openai
-EVALUATION_JUDGE_MODEL=gpt-4.1-mini-2025-04-14
-EVALUATION_JUDGE_API_KEY=
-```
+`EVALUATION_JUDGE_PROVIDER=bedrock`으로 활성화한다. 기본 모델은
+`global.anthropic.claude-haiku-4-5-20251001-v1:0`, 기본 리전은 `ap-northeast-3`이다.
+서버 IAM 역할을 사용하며 API 키는 필요 없다. 질문 생성과 판정 모델은 독립적으로 설정할 수 있다.
+[Bedrock 연동·배포 설정](BEDROCK_SETUP.md)을 참고한다.
 
-키 우선순위는 EVALUATION_JUDGE_API_KEY → QUESTION_GENERATION_API_KEY → OPENAI_API_KEY다.
-모델은 EVALUATION_JUDGE_MODEL → QUESTION_GENERATION_MODEL → 질문 생성 기본 모델 순이다.
-A의 키를 재사용할 수 있지만 EVALUATION_JUDGE_PROVIDER=openai를 명시해야 유료 판정을 활성화한다.
-API 프로세스와 평가 워커에 동일한 환경 변수를 적용하고 재시작한다.
-제공사·모델·판정 지시문 해시·출력 제한을 실행 스냅샷에 기록한다.
-설정 변경 전 접수한 작업은 다른 판정 설정으로 실행하지 않고 EXECUTION_CONFIG_UNAVAILABLE로 종료한다.
+Converse의 지정 도구 입력으로 구조화 JSON을 수집하고 도구는 실행하지 않는다.
+출력 구조·조건 ID·점수·정책 및 답변 근거·실제 인용문 검증을 그대로 적용한다.
+이는 모델의 JSON Schema 준수를 강제로 보장하는 native structured outputs와 다르며
+형식이나 근거가 잘못된 결과는 INVALID_JUDGE_OUTPUT으로 기록한다.
+입력 512KiB·응답 2MiB, 연결 5초·응답 읽기 110초·워커 120초 제한이며 자동 재시도하지 않는다.
+120초는 대기 제한이다. 중단되지 않은 SDK 호출은 전용 실행기에서 프로세스당 1개까지만 유지하며,
+이전 호출이 끝나지 않았으면 새 호출 없이 JUDGE_BUSY로 기록한다. 시간 초과·취소가 슬롯을 조기 반환하거나
+늦은 응답이 기존 판정 결과를 덮어쓰지 않는다.
+정책 원문은 근거 카탈로그에 한 번만 포함해 중복 전송을 줄인다.
 
-원문·답변·검색 근거는 OpenAI에 전송되며 store=false, 고정 HTTPS 엔드포인트,
-리다이렉트 및 환경 프록시 비사용, 자동 재시도 없음으로 구성한다.
-입력은 최대 512KiB, 응답은 최대 2MiB, 요청은 25초(워커 외부 제한 30초)다.
-상위 API의 원문 오류나 키가 결과·로그로 노출되지 않도록 처리한다.
-인증 실패·한도 초과·시간 초과·거절·불완전 출력은 각각 JUDGE_AUTH_FAILED,
-JUDGE_RATE_LIMITED, JUDGE_TIMEOUT, JUDGE_REFUSED, JUDGE_INCOMPLETE로 구분한다.
-모델 출력 구조·점수·조건·근거와 실제 인용문을 서버에서 다시 검증한다.
-
-공식 규격: https://developers.openai.com/api/docs/guides/structured-outputs
+제공사·리전·모델·지시문 해시·출력 방식·온도·출력 및 시간 제한을 실행 스냅샷에 기록한다.
+연결 설정을 바꾸기 전 접수한 작업은 다른 모델로 처리하지 않고 EXECUTION_CONFIG_UNAVAILABLE로 종료한다.
+Bedrock 오류가 나도 개인 OpenAI 키로 자동 전환하지 않는다. 이전 OpenAI 어댑터는
+명시적인 openai 제공사 설정에서만 사용할 수 있고 배포 기본 경로에서는 사용하지 않는다.

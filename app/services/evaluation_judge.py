@@ -15,6 +15,13 @@ CRITERIA = {
 }
 
 
+class JudgeError(Exception):
+    """A sanitized provider failure, distinct from a failed company chatbot call."""
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code, self.message = code, message
+
+
 class EvaluationJudge(Protocol):
     """Provider boundary: enforce timeouts and the submitted profile's output contract."""
     def descriptor(self) -> dict:
@@ -43,15 +50,24 @@ class UnconfiguredJudge:
 
 
 def get_evaluation_judge() -> EvaluationJudge:
-    """Require explicit opt-in; allow the team's question-generation key to be reused."""
-    if os.getenv('EVALUATION_JUDGE_PROVIDER', '').strip().lower() == 'openai':
+    """Select an explicit provider; Bedrock uses server credentials without an API key."""
+    provider = os.getenv('EVALUATION_JUDGE_PROVIDER', '').strip().lower()
+    if provider == 'bedrock':
+        from app.services.bedrock_ai import BedrockEvaluationJudge
+        from app.services.bedrock_runtime import DEFAULT_MODEL, configured_region
+        model = os.getenv('EVALUATION_JUDGE_MODEL', '').strip()
+        if not model and os.getenv('QUESTION_GENERATION_PROVIDER', '').strip().lower() == 'bedrock':
+            model = os.getenv('QUESTION_GENERATION_MODEL', '').strip()
+        return BedrockEvaluationJudge(model or DEFAULT_MODEL, configured_region())
+    if provider == 'openai':
         key = (os.getenv('EVALUATION_JUDGE_API_KEY', '').strip()
                or os.getenv('QUESTION_GENERATION_API_KEY', '').strip()
                or os.getenv('OPENAI_API_KEY', '').strip())
         if key:
             from app.services.openai_evaluation_judge import OpenAIEvaluationJudge
             from app.services.question_generation import DEFAULT_MODEL
-            model = (os.getenv('EVALUATION_JUDGE_MODEL', '').strip()
-                     or os.getenv('QUESTION_GENERATION_MODEL', '').strip() or DEFAULT_MODEL)
-            return OpenAIEvaluationJudge(key, model)
+            model = os.getenv('EVALUATION_JUDGE_MODEL', '').strip()
+            if not model and os.getenv('QUESTION_GENERATION_PROVIDER', '').strip().lower() == 'openai':
+                model = os.getenv('QUESTION_GENERATION_MODEL', '').strip()
+            return OpenAIEvaluationJudge(key, model or DEFAULT_MODEL)
     return UnconfiguredJudge()

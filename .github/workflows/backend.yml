@@ -127,11 +127,12 @@ jobs:
             "$DEPLOY_USER@$DEPLOY_HOST" \
             "deploy $GITHUB_SHA $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT" \
             < "$RUNNER_TEMP/osori-release.tar.gz"
-      - name: Sync question generation settings over restricted SSH
+      - name: Sync Bedrock generation and judgment settings over restricted SSH
         if: steps.current.outputs.deploy == 'true'
         env:
-          QUESTION_GENERATION_API_KEY: ${{ secrets.QUESTION_GENERATION_API_KEY }}
-          QUESTION_GENERATION_MODEL: ${{ vars.QUESTION_GENERATION_MODEL }}
+          BEDROCK_REGION: ${{ vars.BEDROCK_REGION }}
+          BEDROCK_GENERATION_MODEL: ${{ vars.BEDROCK_GENERATION_MODEL }}
+          BEDROCK_JUDGE_MODEL: ${{ vars.BEDROCK_JUDGE_MODEL }}
         run: |
           set -o pipefail
           python -I deploy/question_generation_env.py emit \
