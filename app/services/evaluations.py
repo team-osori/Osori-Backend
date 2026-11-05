@@ -8,6 +8,7 @@ from app.models.evaluation import Evaluation, EvaluationItem
 from app.services.evaluation_judge import CRITERIA
 from app.services.policy import get_evaluation_snapshot, iso
 from app.services.prompts import get_version, select_ab_versions
+from app.services import condition_evaluation
 
 CRITERION_KEYS = tuple(CRITERIA['definitions'])
 TERMINAL = ('COMPLETED', 'PARTIAL_FAILED', 'FAILED')
@@ -50,6 +51,13 @@ def build_inputs(db, service, body, judge):
     testset = get_evaluation_snapshot(db, service.project_id, body.testSetVersionId)
     if not 1 <= len(testset['questions']) <= 200:
         raise ApiError(409, 'INVALID_TESTSET', '평가 가능한 확정 문항이 필요합니다.')
+    criteria = CRITERIA
+    if mode == 'SINGLE' or body.mode == 'COMPARE':
+        try:
+            testset = condition_evaluation.prepare_questions(testset)
+        except (ValueError, TypeError, KeyError):
+            raise ApiError(409, 'INVALID_EXPECTED_CONDITIONS', '기대 조건과 정책 출처를 확인해 주세요.') from None
+        criteria = condition_evaluation.CRITERIA
     assurance = {'sameQuestion': True, 'sameConnectionConfig': True, 'sameCriteria': True,
                  'promptAppliedVerified': False, 'retrievalInputsControlled': False}
     inputs = {'schemaVersion': 1, 'mode': mode, 'useConfiguredPrompt': not inject_prompt,
@@ -57,7 +65,7 @@ def build_inputs(db, service, body, judge):
         'config': deepcopy(connection.config)},
         'prompts': {side: {'id': version.id, 'promptId': version.prompt_id, 'version': version.version,
                     'content': version.content, 'label': version.label} for side, version in versions},
-        'testSet': deepcopy(testset), 'criteria': deepcopy(CRITERIA),
+        'testSet': deepcopy(testset), 'criteria': deepcopy(criteria),
         'judge': deepcopy(judge.descriptor()), 'comparisonAssurance': assurance}
     return inputs, connection.secret_ciphertext
 
@@ -95,13 +103,14 @@ def item_summary(row, inputs=None):
     return {'id': row.id, 'questionId': row.question_id, 'question': row.input['question'],
         'status': row.status, 'aCallStatus': row.a['callStatus'] if row.a else 'NOT_RUN',
         'bCallStatus': 'NOT_APPLICABLE' if single else row.b['callStatus'] if row.b else 'NOT_RUN',
-        'changes': {} if single else {key: change(row.a, row.b, key) for key in CRITERION_KEYS}}
+        'changes': {} if single else {key: change(row.a, row.b, key) for key in
+            (inputs['criteria']['definitions'] if inputs else CRITERION_KEYS)}}
 
 
 def aggregate(run, rows):
     """Compute per-criterion rates with only PASS+FAIL in the denominator, never a total score."""
     results = {}
-    for key in CRITERION_KEYS:
+    for key in run.inputs.get('criteria', CRITERIA)['definitions']:
         entry = {}
         for side_name in side_names(run.inputs):
             counts = {'pass': 0, 'fail': 0, 'notEvaluable': 0, 'judgeFailed': 0,

@@ -22,3 +22,38 @@
 
 아직 제공사를 정하지 않은 판정 AI는 `JUDGE_NOT_CONFIGURED`로 표시한다.
 답변 수집 완료와 판정 가능 여부는 별도로 표현하며 임의 점수를 생성하지 않는다.
+
+## 기대 조건별 판정 및 채점 프로파일
+
+단일 평가와 명시적 `mode: COMPARE`는 v2 프로파일을 사용한다. 정책 준수는 pass/fail/판단 불가,
+질문 해결도(`questionResolution`)와 전달 품질(`communicationQuality`)은 0~4점, 3점 이상 통과다.
+스냅샷의 `criteria`에 점수별 설명과 통과 임계값을 보존한다.
+mode 없이 A/B를 지정한 기존 클라이언트와 기존 실행은 v1 네 기준을 유지한다.
+
+A 담당의 확정 스냅샷에서 각 질문에 다음 `expectedConditions`를 제공할 수 있다.
+
+```json
+{
+  "expectedConditions": [{
+    "id": "refund-exception",
+    "criterion": "policy",
+    "requirement": "사용한 제품의 단순 변심 반품은 불가능하다고 안내한다.",
+    "policyVersionId": "실제-정책-버전-ID",
+    "sourceQuote": "사용한 제품은 단순 변심 반품이 불가능합니다."
+  }]
+}
+```
+
+조건 ID는 문항 안에서 고유하다. criterion은 policy/questionResolution/communicationQuality 중 하나다.
+근거는 스냅샷의 해당 정책 버전 원문에 실제 포함되어야 한다.
+A 쪽 형식 확정 전 호환을 위해 기존 질문은 expectedBehavior·policyVersionId·evidenceQuote로
+`legacy-{questionId}` 조건 하나를 구성한다. 원본 질문 레코드는 수정하지 않는다.
+
+판정 모델은 `ConditionJudgement` 형식으로 세 기준과 모든 조건의 `conditionResults`를 반환한다.
+각 조건 판정은 conditionId·question_id·status·verdict·reason·evidence_refs·error를 포함한다.
+유효한 판정에는 해당 정책과 답변의 서버 발급 근거 ID가 모두 필요하다.
+조건 누락·중복·타 문항/조건/근거 참조, 점수와 verdict 모순, 정책 조건과 정책 요약 모순은
+`INVALID_JUDGE_OUTPUT`이며 판정 실패로 기록한다. 검색 자료가 없다는 이유로 정책 자체 판정을 지우지 않는다.
+
+모델 제공사와 실제 API 형식은 미정이다. get_evaluation_judge의 어댑터 연결부를 사용하며
+현재 기본 어댑터는 모든 기준과 조건을 미판정으로 반환한다. 테스트 어댑터는 테스트에서만 사용한다.

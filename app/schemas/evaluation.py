@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 from app.schemas.policy import Id
 
-Criterion = Literal['retrieval', 'grounding', 'response', 'policy']
+Criterion = Literal['retrieval', 'grounding', 'response', 'policy', 'questionResolution', 'communicationQuality']
 
 
 class RetrievalDocument(BaseModel):
@@ -152,7 +152,8 @@ class EvaluationSide(BaseModel):
     attemptCount: int | None
     error: ExecutionError | None
     judgeError: ExecutionError | None
-    criteria: Judgement
+    criteria: dict[str, dict]
+    conditionResults: list[dict] = []
 
 
 class EvaluationItemResponse(EvaluationItemSummary):
@@ -212,6 +213,6 @@ class CriteriaSummary(BaseModel):
 
 class EvaluationSummary(BaseModel):
     evaluation: EvaluationResponse
-    criteria: CriteriaSummary
+    criteria: dict[str, CriterionSummary]
     formula: str
     provisional: bool

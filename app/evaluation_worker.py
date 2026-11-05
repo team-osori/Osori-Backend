@@ -20,31 +20,36 @@ from app.services.chatbot_gateway import execute_chatbot
 from app.services.evaluation_judge import get_evaluation_judge
 from app.services.evaluations import CRITERION_KEYS, side_names
 from app.services.policy import uid
+from app.services import condition_evaluation
 
 LEASE_SECONDS = 600
 JUDGE_TIMEOUT_SECONDS = 30
 
 
-def ungraded(reason, question_id, error=None):
+def ungraded(reason, question_id, error=None, *, inputs=None, question=None):
     """Keep the model's criterion result contract even when no judgement is available."""
+    if inputs and inputs['criteria']['version'] == 2:
+        output = condition_evaluation.unavailable(question, reason, error)
+        output.pop('conditionResults')
+        return output
     return {key: {'question_id': question_id, 'status': 'error' if error else 'not_evaluable',
         'verdict': None, 'reason': reason, 'evidence_refs': [], 'error': deepcopy(error)} for key in CRITERION_KEYS}
 
 
-def failed_side(code, message, question_id):
+def failed_side(code, message, question_id, *, inputs=None, question=None):
     """Keep execution failures out of pass-rate denominators."""
     return {'callStatus': 'FAILED', 'answer': None, 'evidence': Evidence().model_dump(), 'evidenceCatalog': [],
             'latencyMs': 0, 'attemptCount': 0, 'error': {'code': code, 'message': message},
-            'judgeError': None, 'criteria': ungraded('호출 또는 실행 실패', question_id)}
+            'judgeError': None, 'criteria': ungraded('호출 또는 실행 실패', question_id, inputs=inputs, question=question)}
 
 
-def pending_side(status, question_id, error=None):
+def pending_side(status, question_id, error=None, *, inputs=None, question=None):
     """Distinguish unstarted, active and uncertain calls from confirmed transport failures."""
     reason = {'NOT_RUN': '기업 챗봇 미호출', 'RUNNING': '기업 챗봇 호출·판정 처리 중',
               'INTERRUPTED': '호출 결과를 저장하기 전에 작업이 중단되어 결과를 확인할 수 없음'}[status]
     return {'callStatus': status, 'answer': None, 'evidence': Evidence().model_dump(), 'evidenceCatalog': [],
             'latencyMs': 0 if status == 'NOT_RUN' else None, 'attemptCount': 0 if status == 'NOT_RUN' else None,
-            'error': deepcopy(error), 'judgeError': None, 'criteria': ungraded(reason, question_id)}
+            'error': deepcopy(error), 'judgeError': None, 'criteria': ungraded(reason, question_id, inputs=inputs, question=question)}
 
 
 def close_interrupted(db, run, code='WORKER_INTERRUPTED'):
@@ -62,7 +67,7 @@ def close_interrupted(db, run, code='WORKER_INTERRUPTED'):
                     status = 'NOT_RUN' if side['callStatus'] == 'NOT_RUN' else 'INTERRUPTED'
                 else:
                     continue  # Preserve already persisted successes and failures.
-                setattr(item, name, pending_side(status, item.question_id, error))
+                setattr(item, name, pending_side(status, item.question_id, error, inputs=run.inputs, question=item.input))
             sides = [getattr(item, name) for name in side_names(run.inputs)]
             if all(side['callStatus'] == 'SUCCEEDED' for side in sides):
                 item.status = 'COMPLETED'
@@ -121,17 +126,22 @@ async def judge_response(judge, inputs, question, answer, evidence):
             output = await judge.judge(question=deepcopy(question), answer=answer, evidence=deepcopy(evidence),
                 policies=deepcopy(inputs['testSet']['policies']), criteria=deepcopy(inputs['criteria']),
                 evidence_catalog=deepcopy(catalog))
-        output = Judgement.model_validate(output).model_dump()
-        for result in output.values():
-            if result['question_id'] != question['id'] or any(ref['evidence_id'] not in allowed for ref in result['evidence_refs']):
-                raise ValueError('Question or evidence identity mismatch')
+        if inputs['criteria']['version'] == 2:
+            output = condition_evaluation.validate_judgement(output, question, catalog)
+        else:
+            output = Judgement.model_validate(output).model_dump()
+            for result in output.values():
+                if result['question_id'] != question['id'] or any(ref['evidence_id'] not in allowed for ref in result['evidence_refs']):
+                    raise ValueError('Question or evidence identity mismatch')
     except TimeoutError:
         error = {'code': 'JUDGE_TIMEOUT', 'message': '평가 모델 응답 시간이 초과되었습니다.'}
-        output = ungraded('평가 모델 응답 시간 초과', question['id'], error)
+        output = ungraded('평가 모델 응답 시간 초과', question['id'], error, inputs=inputs, question=question)
     except Exception:
         error = {'code': 'INVALID_JUDGE_OUTPUT', 'message': '유효한 평가 판정을 받지 못했습니다.'}
-        output = ungraded('평가 모델 오류 또는 잘못된 판정 근거', question['id'], error)
-    if error is None and evidence.get('documents') is None:
+        output = ungraded('평가 모델 오류 또는 잘못된 판정 근거', question['id'], error, inputs=inputs, question=question)
+    if error is not None and inputs['criteria']['version'] == 2:
+        output = condition_evaluation.unavailable(question, output['policy']['reason'], error)
+    if error is None and inputs['criteria']['version'] == 1 and evidence.get('documents') is None:
         for key in ('retrieval', 'grounding'):
             if output[key]['status'] != 'error':
                 output[key] = ungraded('기업 API의 검색 근거 자료 미제공', question['id'])[key]
@@ -147,18 +157,19 @@ async def execute_side(inputs, question, side, secret, judge, sender):
             inputs['prompts'].get(side, {}).get('content'), secret, sender=sender,
             apply_prompt=not inputs.get('useConfiguredPrompt', False))
         if result.error:
-            failed = failed_side(result.error['code'], result.error['message'], question['id'])
+            failed = failed_side(result.error['code'], result.error['message'], question['id'], inputs=inputs, question=question)
             failed.update(latencyMs=result.latency_ms, attemptCount=result.attempt_count)
             return failed
         evidence = Evidence.model_validate(result.evidence or {}).model_dump()
         criteria, judge_error = await judge_response(judge, inputs, question, result.answer, evidence)
-        return {'callStatus': 'SUCCEEDED', 'answer': result.answer, 'evidence': evidence,
+        conditions = criteria.pop('conditionResults', [])
+        return {'callStatus': 'SUCCEEDED', 'answer': result.answer, 'evidence': evidence, 'conditionResults': conditions,
                 'evidenceCatalog': [{k: v for k, v in source.items() if k != 'text'}
                                     for source in evidence_catalog(inputs, result.answer, evidence)],
                 'latencyMs': result.latency_ms, 'attemptCount': result.attempt_count, 'error': None,
                 'judgeError': judge_error, 'criteria': criteria}
     except Exception:
-        return failed_side('EXECUTION_ERROR', '문항 실행 중 오류가 발생했습니다.', question['id'])
+        return failed_side('EXECUTION_ERROR', '문항 실행 중 오류가 발생했습니다.', question['id'], inputs=inputs, question=question)
 
 
 def locked_run(db, run_id, token):
@@ -215,8 +226,8 @@ async def process_one(factory=SessionLocal, *, sender=None, judge=None, stop_eve
             item = db.get(EvaluationItem, item_id)
             item.status = 'RUNNING'
             # Persist intent before A; B is explicitly known to be unstarted.
-            item.a = pending_side('RUNNING', item.question_id)
-            item.b = pending_side('NOT_RUN', item.question_id) if 'b' in side_names(inputs) else None
+            item.a = pending_side('RUNNING', item.question_id, inputs=inputs, question=item.input)
+            item.b = pending_side('NOT_RUN', item.question_id, inputs=inputs, question=item.input) if 'b' in side_names(inputs) else None
             question = deepcopy(item.input)
             row.heartbeat_at = now()
             db.commit()
@@ -227,7 +238,7 @@ async def process_one(factory=SessionLocal, *, sender=None, judge=None, stop_eve
                     if row is None:
                         return True
                     item = db.get(EvaluationItem, item_id)
-                    item.b = pending_side('RUNNING', item.question_id)
+                    item.b = pending_side('RUNNING', item.question_id, inputs=inputs, question=item.input)
                     row.heartbeat_at = now()
                     db.commit()
             outcome = await execute_side(inputs, question, side, secret, judge, sender)

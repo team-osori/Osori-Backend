@@ -32,6 +32,9 @@ class UnconfiguredJudge:
 
     async def judge(self, **kwargs):
         """Keep every criterion ungraded while preserving the completed company response."""
+        if kwargs['criteria']['version'] == 2:
+            from app.services.condition_evaluation import unavailable
+            return unavailable(kwargs['question'], '평가 모델 미연결')
         return Judgement.model_validate({key: {'question_id': kwargs['question']['id'],
             'status': 'not_evaluable', 'verdict': None, 'reason': '평가 모델 미연결', 'evidence_refs': [], 'error': None}
             for key in CRITERIA['definitions']})
