@@ -17,6 +17,7 @@ install -d -m 0755 /usr/local/lib/osori
 install -m 0755 "$script_dir/deploy.sh" /usr/local/sbin/osori-deploy
 install -m 0755 "$script_dir/ssh_entrypoint.py" /usr/local/bin/osori-ci-entrypoint
 install -m 0644 "$script_dir/archive.py" /usr/local/lib/osori/archive.py
+install -m 0644 "$script_dir/question_generation_env.py" /usr/local/lib/osori/question_generation_env.py
 /usr/local/sbin/osori-deploy --prepare-host
 
 if [[ ! -f /etc/osori-backend.env ]]; then

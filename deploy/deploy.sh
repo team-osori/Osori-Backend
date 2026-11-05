@@ -3,6 +3,12 @@
 set -Eeuo pipefail
 umask 027
 [[ $EUID -eq 0 ]] || { echo 'Run through the deployment entrypoint.' >&2; exit 1; }
+if [[ $# -eq 1 && $1 == --configure-question-generation ]]; then
+  exec 9>/var/lock/osori-backend-deploy.lock
+  flock -w 900 9
+  /usr/bin/python3 -I /usr/local/lib/osori/question_generation_env.py install
+  exit 0
+fi
 # The runtime UID and its writable StateDirectory must never influence build startup.
 prepare_builder() {
   if ! id osori-build >/dev/null 2>&1; then
@@ -157,6 +163,9 @@ fi
 install -m 0755 deploy/deploy.sh /usr/local/sbin/osori-deploy
 install -m 0755 deploy/ssh_entrypoint.py /usr/local/bin/osori-ci-entrypoint
 install -m 0644 deploy/archive.py /usr/local/lib/osori/archive.py
+if [[ -f deploy/question_generation_env.py ]]; then
+  install -m 0644 deploy/question_generation_env.py /usr/local/lib/osori/question_generation_env.py
+fi
 
 /usr/bin/python3 -I - "$root" <<'PY'
 from pathlib import Path

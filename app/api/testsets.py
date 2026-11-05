@@ -10,13 +10,14 @@ from sqlalchemy import func, select, update
 from app.api.dependencies import CurrentUser, Db, OwnedProject, ResourceId
 from app.api.policies import Cursor, Limit
 from app.core.errors import ApiError
-from app.models.policy import GenerationRequest, TestQuestion, TestSet, TestSetVersion
+from app.models.policy import GenerationRequest, QuestionHistory, TestQuestion, TestSet, TestSetVersion
 from app.schemas.policy import Generate, GeneratedQuestions, NewDraft, QuestionWrite, Review, Revision, TestSetCreate
 from app.schemas.responses import Data, Page, ERROR_RESPONSES
-from app.schemas.policy import TestSetOut, TestSetDetail, TestSetVersionOut, TestSetVersionSummary, QuestionOut, EvaluationSnapshot
+from app.schemas.policy import TestSetOut, TestSetDetail, TestSetVersionOut, TestSetVersionSummary, QuestionOut, QuestionHistoryOut, EvaluationSnapshot
 from app.services import policy as service
 from app.services.auth import now
 from app.services.question_generation import QuestionGenerator, get_question_generator
+from app.services.rate_limit import check_rate_limit
 
 router = APIRouter(prefix='/api/projects/{projectId}/testsets', tags=['testsets'], responses=ERROR_RESPONSES)
 MAX_QUESTIONS = 200
@@ -92,7 +93,7 @@ def get_version(testSetId: ResourceId, versionId: ResourceId, project: OwnedProj
 
 
 @router.post('/{testSetId}/versions', status_code=201, response_model=Data[TestSetVersionOut])
-def new_draft(testSetId: ResourceId, body: NewDraft, project: OwnedProject, db: Db, response: Response):
+def new_draft(testSetId: ResourceId, body: NewDraft, project: OwnedProject, user: CurrentUser, db: Db, response: Response):
     """Copy a confirmed version to a new draft and require fresh human review."""
     row = service.testset_row(db, project.id, testSetId)
     source = service.version_row(db, testSetId, body.sourceVersionId)
@@ -111,22 +112,26 @@ def new_draft(testSetId: ResourceId, body: NewDraft, project: OwnedProject, db: 
     db.add(version)
     db.flush()
     for question in service.questions(db, source.id) if body.policyVersionIds is None else []:
-        db.add(TestQuestion(id=service.uid(), testset_version_id=version.id, payload=question.payload,
-            review_status='pending', created_at=now()))
+        payload = {**question.payload, 'expectedConditions': service.question_data(question)['expectedConditions']}
+        copied = TestQuestion(id=service.uid(), testset_version_id=version.id, payload=payload,
+            review_status='pending', created_at=now())
+        db.add(copied)
+        service.record_history(db, version, copied, user.id, 'copied', note=f'원본 문항: {question.id}')
     db.commit()
     response.headers['Location'] = f'/api/projects/{project.id}/testsets/{row.id}/versions/{version.id}'
     return {'data': service.version_data(db, version)}
 
 
 @router.post('/{testSetId}/versions/{versionId}/questions', status_code=201, response_model=Data[TestSetVersionOut])
-def add_question(testSetId: ResourceId, versionId: ResourceId, body: QuestionWrite, project: OwnedProject, db: Db, response: Response):
-    """Support manual questions while the generation provider is not yet selected."""
+def add_question(testSetId: ResourceId, versionId: ResourceId, body: QuestionWrite, project: OwnedProject, user: CurrentUser, db: Db, response: Response):
+    """Create a source-grounded manual question with an auditable initial state."""
     version = resolve(db, project.id, testSetId, versionId)
     service.claim_draft(db, version, body.expectedRevision)
     ensure_capacity(db, version.id, 1)
     row = TestQuestion(id=service.uid(), testset_version_id=version.id,
         payload=service.question_payload(db, project.id, version, body), review_status='pending', created_at=now())
     db.add(row)
+    service.record_history(db, version, row, user.id, 'created', note=body.changeNote)
     db.commit()
     response.headers['Location'] = f'/api/projects/{project.id}/testsets/{testSetId}/versions/{version.id}/questions/{row.id}'
     return {'data': service.version_data(db, version)}
@@ -140,13 +145,16 @@ def get_question(testSetId: ResourceId, versionId: ResourceId, questionId: Resou
 
 
 @router.patch('/{testSetId}/versions/{versionId}/questions/{questionId}', response_model=Data[TestSetVersionOut])
-def edit_question(testSetId: ResourceId, versionId: ResourceId, questionId: ResourceId, body: QuestionWrite, project: OwnedProject, db: Db):
+def edit_question(testSetId: ResourceId, versionId: ResourceId, questionId: ResourceId, body: QuestionWrite, project: OwnedProject, user: CurrentUser, db: Db):
     """Replace a draft question and invalidate any prior human approval."""
     version = resolve(db, project.id, testSetId, versionId)
     service.claim_draft(db, version, body.expectedRevision)
     row = question_row(db, version.id, questionId)
-    row.payload = service.question_payload(db, project.id, version, body)
+    before = service.question_data(row)
+    row.payload = service.question_payload(db, project.id, version, body, previous=before)
     row.review_status, row.reviewed_by, row.review_note = 'pending', None, None
+    row.reviewed_at = None
+    service.record_history(db, version, row, user.id, 'edited', before=before, note=body.changeNote)
     db.commit()
     return {'data': service.version_data(db, version)}
 
@@ -158,13 +166,17 @@ def review_question(testSetId: ResourceId, versionId: ResourceId, questionId: Re
     version = resolve(db, project.id, testSetId, versionId)
     service.claim_draft(db, version, body.expectedRevision)
     row = question_row(db, version.id, questionId)
+    before = service.question_data(row)
     row.review_status, row.reviewed_by, row.review_note = body.status, user.id, body.note
+    # Match MySQL DATETIME precision before freezing the audit JSON pre-commit.
+    row.reviewed_at = now().replace(microsecond=0)
+    service.record_history(db, version, row, user.id, 'reviewed', before=before, note=body.note)
     db.commit()
     return {'data': service.version_data(db, version)}
 
 
 @router.delete('/{testSetId}/versions/{versionId}/questions/{questionId}', status_code=204)
-def delete_question(testSetId: ResourceId, versionId: ResourceId, questionId: ResourceId, project: OwnedProject, db: Db,
+def delete_question(testSetId: ResourceId, versionId: ResourceId, questionId: ResourceId, project: OwnedProject, user: CurrentUser, db: Db,
                     if_match: Annotated[str | None, Header()] = None):
     """Remove a draft-only question using the current version revision as If-Match."""
     version = resolve(db, project.id, testSetId, versionId)
@@ -173,7 +185,9 @@ def delete_question(testSetId: ResourceId, versionId: ResourceId, questionId: Re
     if if_match != f'"{version.revision}"':
         raise ApiError(412, 'PRECONDITION_FAILED', '최신 revision을 확인해 주세요.')
     service.claim_draft(db, version, version.revision)
-    db.delete(question_row(db, version.id, questionId))
+    row = question_row(db, version.id, questionId)
+    service.record_history(db, version, row, user.id, 'deleted', before=service.question_data(row))
+    db.delete(row)
     db.commit()
     return Response(status_code=204)
 
@@ -188,7 +202,7 @@ def confirm(testSetId: ResourceId, versionId: ResourceId, body: Revision, projec
         raise ApiError(409, 'REVIEW_REQUIRED', '모든 문항을 사람이 승인한 뒤 확정하세요.')
     sources = service.policy_versions(db, project.id, version.policy_version_ids, allow_deleted=True)
     version.status, version.confirmed_by, version.confirmed_at = 'confirmed', user.id, now()
-    version.snapshot = {'schemaVersion': 1, 'projectId': project.id, 'testSetId': testSetId,
+    version.snapshot = {'schemaVersion': 2, 'projectId': project.id, 'testSetId': testSetId,
         'testSetVersionId': version.id, 'version': version.version, 'confirmedBy': user.id,
         'confirmedAt': service.iso(version.confirmed_at), 'policies': [service.policy_version_data(p) for p in sources],
         'questions': [service.question_data(q) for q in rows]}
@@ -203,6 +217,28 @@ def evaluation_snapshot(testSetId: ResourceId, versionId: ResourceId, project: O
     return {'data': service.get_evaluation_snapshot(db, project.id, version.id)}
 
 
+@router.get('/{testSetId}/versions/{versionId}/history', response_model=Data[Page[QuestionHistoryOut]])
+def version_history(testSetId: ResourceId, versionId: ResourceId, project: OwnedProject, db: Db,
+                    limit: Limit = 20, cursor: Cursor = None):
+    """Include deleted questions in the version's append-only review/edit timeline."""
+    version = resolve(db, project.id, testSetId, versionId)
+    rows, next_cursor = service.paginate(db, select(QuestionHistory).where(QuestionHistory.testset_version_id == version.id),
+        QuestionHistory, f'questionHistory:{version.id}', limit, cursor, versioned=True, sequence=QuestionHistory.version_revision)
+    return {'data': {'items': [service.history_data(row) for row in rows], 'nextCursor': next_cursor}}
+
+
+@router.get('/{testSetId}/versions/{versionId}/questions/{questionId}/history', response_model=Data[Page[QuestionHistoryOut]])
+def question_history(testSetId: ResourceId, versionId: ResourceId, questionId: ResourceId, project: OwnedProject, db: Db,
+                     limit: Limit = 20, cursor: Cursor = None):
+    version = resolve(db, project.id, testSetId, versionId)
+    statement = select(QuestionHistory).where(QuestionHistory.testset_version_id == version.id, QuestionHistory.question_id == questionId)
+    if db.scalar(statement.limit(1)) is None:
+        question_row(db, version.id, questionId)  # Existing legacy questions legitimately have no recorded history.
+    rows, next_cursor = service.paginate(db, statement, QuestionHistory, f'questionHistory:{version.id}:{questionId}',
+        limit, cursor, versioned=True, sequence=QuestionHistory.version_revision)
+    return {'data': {'items': [service.history_data(row) for row in rows], 'nextCursor': next_cursor}}
+
+
 @router.post('/{testSetId}/versions/{versionId}/questions/generate', response_model=Data[TestSetVersionOut])
 def generate(testSetId: ResourceId, versionId: ResourceId, body: Generate, project: OwnedProject,
              user: CurrentUser, db: Db, generator: Annotated[QuestionGenerator, Depends(get_question_generator)],
@@ -211,6 +247,10 @@ def generate(testSetId: ResourceId, versionId: ResourceId, body: Generate, proje
     if not idempotency_key.strip():
         raise ApiError(400, 'VALIDATION_ERROR', 'Idempotency-Key는 공백일 수 없습니다.')
     version = resolve(db, project.id, testSetId, versionId)
+    # A separate committed quota precedes draft locks; failed provider calls also count.
+    retry_after = check_rate_limit(db, user.id, 'question-generation', 10)
+    if retry_after is not None:
+        raise ApiError(429, 'RATE_LIMITED', '질문 생성 요청이 너무 많습니다.', headers={'Retry-After': str(retry_after)})
     # Serialize generation calls for this version before checking replay or revision.
     db.execute(select(TestSetVersion.id).where(TestSetVersion.id == version.id).with_for_update())
     key = hashlib.sha256(f'{user.id}|{version.id}|{idempotency_key}'.encode()).hexdigest()
@@ -228,9 +268,12 @@ def generate(testSetId: ResourceId, versionId: ResourceId, body: Generate, proje
     ensure_capacity(db, version.id, body.count)
     sources = service.policy_versions(db, project.id, version.policy_version_ids, allow_deleted=True)
     try:
-        generated = GeneratedQuestions.model_validate(generator.generate(policies=[service.policy_version_data(p) for p in sources], count=body.count))
+        options = {'categories': body.categories} if body.categories is not None else {}
+        generated = GeneratedQuestions.model_validate(generator.generate(policies=[service.policy_version_data(p) for p in sources], count=body.count, **options))
         if len(generated.questions) != body.count:
             raise ValueError('Unexpected question count')
+        if body.categories is not None and {q.category for q in generated.questions} != set(body.categories):
+            raise ValueError('Missing or unexpected question categories')
         try:
             payloads = [service.question_payload(db, project.id, version, question) for question in generated.questions]
         except ApiError:
@@ -248,7 +291,9 @@ def generate(testSetId: ResourceId, versionId: ResourceId, body: Generate, proje
         db.rollback()
         raise ApiError(503, 'GENERATION_UNAVAILABLE', '질문 생성 서비스를 사용할 수 없습니다.') from None
     for payload in payloads:
-        db.add(TestQuestion(id=service.uid(), testset_version_id=version.id, payload=payload, review_status='pending', created_at=now()))
+        row = TestQuestion(id=service.uid(), testset_version_id=version.id, payload=payload, review_status='pending', created_at=now())
+        db.add(row)
+        service.record_history(db, version, row, user.id, 'generated')
     db.flush()
     result = {'data': service.version_data(db, version)}
     db.add(GenerationRequest(key=key, request_hash=fingerprint, response=result, expires_at=now() + timedelta(hours=24)))
