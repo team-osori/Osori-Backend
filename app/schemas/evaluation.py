@@ -13,7 +13,9 @@ Criterion = Literal['retrieval', 'grounding', 'response', 'policy', 'questionRes
 
 class RetrievalDocument(BaseModel):
     """Source content returned by the company API, not a URL fetched by Osori."""
-    model_config = ConfigDict(extra='forbid')
+    # 기업 API는 점수 · 페이지 같은 메타데이터를 함께 주는 경우가 많다(예: 팀 RAG의 score · page).
+    # 알 수 없는 필드는 저장하지 않고 버리며, 아래 필드의 검증은 그대로 한다.
+    model_config = ConfigDict(extra='ignore')
     id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
     text: Annotated[str, StringConstraints(min_length=1, max_length=10000)]
     title: Annotated[str | None, Field(max_length=500)] = None
