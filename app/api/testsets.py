@@ -1,15 +1,16 @@
 import hashlib
 import json
+from collections import Counter
 from datetime import timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Response
+from fastapi import APIRouter, Depends, File, Form, Header, Request, Response, UploadFile
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
 
 from app.api.dependencies import IfMatch, CurrentUser, Db, OwnedProject, ResourceId
 from app.api.policies import Cursor, Limit
-from app.core.errors import ApiError
+from app.core.errors import ApiError, error_response
 from app.models.policy import GenerationRequest, QuestionHistory, TestQuestion, TestSet, TestSetVersion
 from app.schemas.policy import Generate, GeneratedQuestions, NewDraft, Rename, QuestionWrite, Review, Revision, TestSetCreate
 from app.schemas.responses import Data, Page, ERROR_RESPONSES
@@ -18,6 +19,7 @@ from app.services import policy as service
 from app.services.auth import now
 from app.services.question_generation import QuestionGenerator, get_question_generator
 from app.services.rate_limit import check_rate_limit
+from app.services.question_import import CsvValidationError, MAX_CSV_BYTES, parse_questions
 
 router = APIRouter(prefix='/api/projects/{projectId}/testsets', tags=['testsets'], responses=ERROR_RESPONSES)
 MAX_QUESTIONS = 200
@@ -138,6 +140,32 @@ def add_question(testSetId: ResourceId, versionId: ResourceId, body: QuestionWri
     return {'data': service.version_data(db, version)}
 
 
+@router.post('/{testSetId}/versions/{versionId}/questions/import', status_code=201, response_model=Data[TestSetVersionOut])
+def import_questions(testSetId: ResourceId, versionId: ResourceId, project: OwnedProject, user: CurrentUser,
+                     db: Db, request: Request,
+                     file: Annotated[UploadFile, File(description='UTF-8 CSV, 최대 2MiB·200행. question,category,modelAnswer 헤더')],
+                     expectedRevision: Annotated[int, Form(ge=1, le=2**31 - 1)]):
+    """Validate every row before atomically appending pending, unlinked questions."""
+    version = resolve(db, project.id, testSetId, versionId)
+    try:
+        if not (file.filename or '').lower().endswith('.csv'):
+            raise ApiError(415, 'CSV_FILE_REQUIRED', '.csv 파일을 업로드하세요.')
+        bodies = parse_questions(file.file.read(MAX_CSV_BYTES + 1))
+    except CsvValidationError as exc:
+        return error_response(request.scope, exc.status, exc.code, exc.message, field_errors=exc.field_errors)
+    finally:
+        file.file.close()
+    service.claim_draft(db, version, expectedRevision)
+    ensure_capacity(db, version.id, len(bodies))
+    for body in bodies:
+        row = TestQuestion(id=service.uid(), testset_version_id=version.id,
+            payload=service.question_payload(db, project.id, version, body), review_status='pending', created_at=now())
+        db.add(row)
+        service.record_history(db, version, row, user.id, 'created', note='CSV 가져오기')
+    db.commit()
+    return {'data': service.version_data(db, version)}
+
+
 @router.get('/{testSetId}/versions/{versionId}/questions/{questionId}', response_model=Data[QuestionOut])
 def get_question(testSetId: ResourceId, versionId: ResourceId, questionId: ResourceId, project: OwnedProject, db: Db):
     """Return a single question after checking every parent scope."""
@@ -168,6 +196,8 @@ def review_question(testSetId: ResourceId, versionId: ResourceId, questionId: Re
     service.claim_draft(db, version, body.expectedRevision)
     row = question_row(db, version.id, questionId)
     before = service.question_data(row)
+    if body.status == 'approved':
+        service.require_reviewable(db, project.id, version, row)
     row.review_status, row.reviewed_by, row.review_note = body.status, user.id, body.note
     # Match MySQL DATETIME precision before freezing the audit JSON pre-commit.
     row.reviewed_at = now().replace(microsecond=0)
@@ -201,6 +231,8 @@ def confirm(testSetId: ResourceId, versionId: ResourceId, body: Revision, projec
     rows = service.questions(db, version.id, lock=True)
     if not rows or any(q.review_status != 'approved' or q.reviewed_by is None for q in rows):
         raise ApiError(409, 'REVIEW_REQUIRED', '모든 문항을 사람이 승인한 뒤 확정하세요.')
+    for row in rows:
+        service.require_reviewable(db, project.id, version, row)
     sources = service.policy_versions(db, project.id, version.policy_version_ids, allow_deleted=True)
     version.status, version.confirmed_by, version.confirmed_at = 'confirmed', user.id, now()
     version.snapshot = {'schemaVersion': 2, 'projectId': project.id, 'testSetId': testSetId,
@@ -211,7 +243,7 @@ def confirm(testSetId: ResourceId, versionId: ResourceId, body: Revision, projec
     return {'data': service.version_data(db, version)}
 
 
-@router.get('/{testSetId}/versions/{versionId}/evaluation-snapshot', response_model=Data[EvaluationSnapshot])
+@router.get('/{testSetId}/versions/{versionId}/evaluation-snapshot', response_model=Data[EvaluationSnapshot], response_model_exclude_unset=True)
 def evaluation_snapshot(testSetId: ResourceId, versionId: ResourceId, project: OwnedProject, db: Db):
     """Supply the evaluation team with an immutable, fully reviewed input snapshot."""
     version = resolve(db, project.id, testSetId, versionId)
@@ -255,7 +287,9 @@ def generate(testSetId: ResourceId, versionId: ResourceId, body: Generate, proje
     # Serialize generation calls for this version before checking replay or revision.
     db.execute(select(TestSetVersion.id).where(TestSetVersion.id == version.id).with_for_update())
     key = hashlib.sha256(f'{user.id}|{version.id}|{idempotency_key}'.encode()).hexdigest()
-    fingerprint = hashlib.sha256(json.dumps(body.model_dump(), sort_keys=True).encode()).hexdigest()
+    # Preserve fingerprints of in-flight 24-hour replays created before categoryCounts existed.
+    fingerprint_body = body.model_dump(exclude={'categoryCounts'} if body.categoryCounts is None else set())
+    fingerprint = hashlib.sha256(json.dumps(fingerprint_body, sort_keys=True).encode()).hexdigest()
     old = db.scalar(select(GenerationRequest).where(GenerationRequest.key == key).with_for_update())
     if old is not None:
         expiry = old.expires_at.replace(tzinfo=now().tzinfo)
@@ -270,11 +304,15 @@ def generate(testSetId: ResourceId, versionId: ResourceId, body: Generate, proje
     sources = service.policy_versions(db, project.id, version.policy_version_ids, allow_deleted=True)
     try:
         options = {'categories': body.categories} if body.categories is not None else {}
+        if body.categoryCounts is not None:
+            options['category_counts'] = body.categoryCounts
         generated = GeneratedQuestions.model_validate(generator.generate(policies=[service.policy_version_data(p) for p in sources], count=body.count, **options))
         if len(generated.questions) != body.count:
             raise ApiError(502, 'GENERATION_COUNT_MISMATCH', '생성된 문항 수가 요청과 다릅니다.')
         if body.categories is not None and {q.category for q in generated.questions} != set(body.categories):
             raise ApiError(502, 'GENERATION_CATEGORY_MISMATCH', '생성된 문항 유형이 요청과 다릅니다.')
+        if body.categoryCounts is not None and Counter(q.category for q in generated.questions) != {k: v for k, v in body.categoryCounts.items() if v}:
+            raise ApiError(502, 'GENERATION_CATEGORY_COUNT_MISMATCH', '생성된 유형별 문항 수가 요청과 다릅니다.')
         try:
             payloads = [service.question_payload(db, project.id, version, question, generated=True) for question in generated.questions]
         except ApiError as exc:

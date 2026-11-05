@@ -81,6 +81,8 @@ def claim_draft(db, version, revision):
 
 def legacy_conditions(payload, question_id):
     """Derive stable IDs for old draft data without rewriting frozen historical snapshots."""
+    if payload.get('policyVersionId') is None:
+        return None
     source = {key: payload[key] for key in ('policyVersionId', 'ruleKeys', 'evidenceQuote')}
     behaviors = [('required', payload['expectedBehavior'])] + [('forbidden', text) for text in payload['forbiddenBehaviors']]
     return [{'id': str(uuid5(NAMESPACE_URL, f'osori:{question_id}:{index}')), 'description': text,
@@ -102,7 +104,11 @@ def source_quote(quote, content, *, normalize_whitespace=False):
 
 
 def question_payload(db, project_id, version, body: QuestionBody, *, previous=None, generated=False):
-    """Require explicit source version, valid rules and a verbatim policy passage."""
+    """Allow unlinked drafts; validate all supplied evidence and preserve condition IDs."""
+    if body.policyVersionId is None:
+        if generated:
+            raise ApiError(400, 'INVALID_POLICY_EVIDENCE', '생성 문항에는 실제 정책 근거가 필요합니다.')
+        return body.model_dump(exclude={'expectedRevision', 'changeNote'})
     if body.policyVersionId not in version.policy_version_ids:
         raise ApiError(400, 'INVALID_POLICY_REFERENCE', '테스트셋에 포함된 정책 버전을 선택하세요.')
     policy = policy_versions(db, project_id, [body.policyVersionId], allow_deleted=True)[0]
@@ -124,7 +130,7 @@ def question_payload(db, project_id, version, body: QuestionBody, *, previous=No
                 available = [c for c in available if c['id'] != match['id']]
     else:
         conditions = payload['expectedConditions']
-        allowed_ids = {c['id'] for c in (previous or {}).get('expectedConditions', [])}
+        allowed_ids = {c['id'] for c in ((previous or {}).get('expectedConditions') or [])}
         supplied = [c['id'] for c in conditions if c['id'] is not None]
         if len(set(supplied)) != len(supplied) or not set(supplied) <= allowed_ids:
             raise ApiError(400, 'INVALID_CONDITION_ID', '기존 조건 ID를 유지하거나 새 조건의 ID를 생략하세요.')
@@ -152,6 +158,16 @@ def question_payload(db, project_id, version, body: QuestionBody, *, previous=No
     return payload
 
 
+
+def require_reviewable(db, project_id, version, row):
+    """Keep the v2 evaluator's complete-evidence invariant at both review and freeze."""
+    if row.payload.get('policyVersionId') is None:
+        raise ApiError(409, 'QUESTION_EVIDENCE_REQUIRED', '문항 근거를 연결한 뒤 승인·확정하세요.')
+    data = question_data(row)
+    body = QuestionBody.model_validate({key: data[key] for key in QuestionBody.model_fields if key in data})
+    question_payload(db, project_id, version, body, previous=data)
+
+
 def policy_data(row):
     """Serialize the stable policy identity separately from immutable content versions."""
     return {'id': row.id, 'projectId': row.project_id, 'name': row.name, 'revision': row.revision,
@@ -172,7 +188,7 @@ def testset_data(row):
 
 def question_data(row):
     """Expose human review state along with original question and evidence fields."""
-    return {'id': row.id, **row.payload,
+    return {'id': row.id, 'modelAnswer': None, **row.payload,
             'expectedConditions': row.payload.get('expectedConditions') or legacy_conditions(row.payload, row.id),
             'reviewStatus': row.review_status, 'reviewedBy': row.reviewed_by,
             'reviewNote': row.review_note, 'reviewedAt': iso(row.reviewed_at)}
@@ -228,7 +244,10 @@ def paginate(db, statement, model, scope, limit, cursor, *, versioned=False, seq
 
 def version_data(db, row):
     """Serialize one bounded draft or confirmed review queue."""
-    return {**version_summary(row), 'questions': [question_data(q) for q in questions(db, row.id)]}
+    rows = questions(db, row.id)
+    return {**version_summary(row), 'questions': [question_data(q) for q in rows],
+            'questionCount': len(rows),
+            'approvedCount': sum(q.review_status == 'approved' and q.reviewed_by is not None for q in rows)}
 
 
 def get_evaluation_snapshot(db, project_id, version_id):
