@@ -4,6 +4,13 @@ from copy import deepcopy
 
 from app.services.evaluations import side_names
 from app.services.condition_evaluation import normalize_condition
+from app.services.json_pointer import read_pointer
+
+SCREEN_COUNTS = {'CORRECT': 'correct', 'INCORRECT': 'incorrect', 'PENDING': 'pending',
+                 'REMAINING': 'remaining', 'EXECUTION_ERROR': 'executionError',
+                 'JUDGMENT_ERROR': 'judgmentError', 'REVIEW_REQUIRED': 'reviewRequired'}
+CAUSE_AREAS = ('RETRIEVAL', 'PROMPT', 'MODEL')
+ANALYSIS_STATUSES = ('HYPOTHESIS_AVAILABLE', 'UNDETERMINED', 'UNAVAILABLE', 'NOT_APPLICABLE')
 
 STATUSES = ('MET', 'UNMET', 'REVIEW_REQUIRED', 'JUDGMENT_ERROR', 'EXECUTION_ERROR', 'NOT_RUN', 'IN_PROGRESS')
 
@@ -21,7 +28,7 @@ def apply_reviews(question, side, reviews):
                     'evidence_refs': [], 'error': None})
         result.update(status='not_evaluable' if review['verdict'] == 'not_evaluable' else 'judged',
                       verdict=None if review['verdict'] == 'not_evaluable' else review['verdict'],
-                      reason=review['reason'], humanReview=review, issue=None)
+                      reason=review['reason'], humanReview=review, issue=None, error=None)
         if review['verdict'] == 'fail':
             result['issue'] = {'kind': 'other', 'answerQuote': None, 'missingGuidance': [],
                                'recommendation': None, 'hypothesis': None}
@@ -74,17 +81,75 @@ def describe_side(question, side, reviews=()):
     results = list((side or {}).get('criteria', {}).values()) + (side or {}).get('conditionResults', [])
     errors = [result for result in results if result['status'] == 'error']
     unavailable = [result for result in results if result['status'] == 'not_evaluable']
-    return {'status': status, 'needsReview': status not in ('MET', 'NOT_RUN', 'IN_PROGRESS') or bool(errors or unavailable),
+    return {'status': status, 'screenStatus': screen_status(question, side), 'needsReview': status not in ('MET', 'NOT_RUN', 'IN_PROGRESS') or bool(errors or unavailable),
             'hasJudgmentError': bool(errors), 'hasUnevaluableCriteria': bool(unavailable),
             'conditions': conditions, 'issues': issues, 'humanReviewApplied': bool(reviews)}
 
 
+def screen_status(question, side):
+    """Exclusive UI buckets: incomplete judgement never becomes an O/X grade."""
+    call = (side or {}).get('callStatus', 'NOT_RUN')
+    if call == 'NOT_RUN':
+        return 'REMAINING'
+    if call == 'RUNNING':
+        return 'PENDING'
+    if call != 'SUCCEEDED':
+        return 'EXECUTION_ERROR'
+    results = list(side.get('criteria', {}).values()) + side.get('conditionResults', [])
+    if any(result['status'] == 'error' for result in results):
+        return 'JUDGMENT_ERROR'
+    decisions = {result['conditionId'] for result in side.get('conditionResults', [])}
+    if (not results or any(result['status'] != 'judged' or result['verdict'] is None for result in results)
+            or any(condition['id'] not in decisions for condition in question.get('expectedConditions', []))):
+        return 'REVIEW_REQUIRED'
+    return 'INCORRECT' if any(result['verdict'] == 'fail' for result in results) else 'CORRECT'
+
+
 def item_analysis(run, item, reviews=None):
     reviews = reviews or {}
-    return {name: {**describe_side(item.input, getattr(item, name),
-                    [value for (item_id, side, condition_id), value in reviews.items() if item_id == item.id and side == name]),
-                   **cause_analysis(run.inputs, item.input, name, getattr(item, name))}
-            for name in side_names(run.inputs)}
+    result = {}
+    for name in side_names(run.inputs):
+        detail = describe_side(item.input, getattr(item, name),
+            [value for (item_id, side, condition_id), value in reviews.items() if item_id == item.id and side == name])
+        causes = cause_analysis(run.inputs, item.input, name, getattr(item, name))
+        failed = {condition['conditionId'] for condition in detail['conditions']
+                  if condition['judgment'] and condition['judgment']['verdict'] == 'fail'}
+        active = [hypothesis for hypothesis in causes['hypotheses'] if hypothesis['conditionId'] in failed
+                  and detail['screenStatus'] == 'INCORRECT']
+        analysis_status = ('NOT_APPLICABLE' if detail['screenStatus'] == 'CORRECT' else
+                           'UNAVAILABLE' if detail['screenStatus'] != 'INCORRECT' else
+                           'HYPOTHESIS_AVAILABLE' if active else 'UNDETERMINED')
+        result[name] = {**detail, **causes, 'activeHypotheses': active,
+                        'activeHypothesisAreas': sorted({hypothesis['area'] for hypothesis in active}),
+                        'analysisStatus': analysis_status,
+                        'hypothesesBasis': 'AUTOMATIC',
+                        'activeHypothesesBasis': 'LATEST_HUMAN_CONDITION_REVIEW_OVER_AUTOMATIC',
+                        'promptContext': prompt_context(run.inputs, name)}
+    return result
+
+
+def prompt_context(inputs, name):
+    """Expose only a known frozen prompt location; never guess company internals."""
+    prompt = inputs.get('prompts', {}).get(name)
+    context = {'source': 'UNAVAILABLE', 'available': False, 'promptVersionId': None,
+               'promptId': None, 'version': None, 'content': None, 'pointer': None,
+               'connectionRevision': inputs.get('connection', {}).get('revision'),
+               'applicationVerified': inputs.get('comparisonAssurance', {}).get('promptAppliedVerified', False)}
+    if prompt:
+        return {**context, 'source': 'SELECTED_VERSION', 'available': True,
+                'promptVersionId': prompt['id'], 'promptId': prompt.get('promptId'),
+                'version': prompt.get('version'), 'content': prompt['content']}
+    config = inputs.get('connection', {}).get('config', {})
+    pointer = config.get('promptPointer')
+    if inputs.get('useConfiguredPrompt') and config.get('executionMode') == 'PROMPT_BODY' and pointer:
+        try:
+            content = read_pointer(config.get('requestTemplate', {}), pointer)
+        except ValueError:
+            return context
+        if isinstance(content, str):
+            return {**context, 'source': 'CONFIGURED_TEMPLATE', 'available': True,
+                    'content': content, 'pointer': pointer}
+    return context
 
 
 def cause_analysis(inputs, question, name, side):
@@ -126,16 +191,29 @@ def cause_analysis(inputs, question, name, side):
 
 def summarize(run, items, reviews=None):
     result = {}
+    # Compute once per item, then partition by side. All counts precede pagination.
+    analyses = [item_analysis(run, item, reviews) for item in items]
     for name in side_names(run.inputs):
         statuses = Counter()
         kinds = Counter()
+        screen = Counter()
+        causes = Counter()
+        analysis_statuses = Counter()
         review = 0
-        for item in items:
-            analysis = item_analysis(run, item, reviews)[name]
+        for details in analyses:
+            analysis = details[name]
             statuses[analysis['status']] += 1
+            screen[analysis['screenStatus']] += 1
+            causes.update(analysis['activeHypothesisAreas'])
+            analysis_statuses[analysis['analysisStatus']] += 1
             review += analysis['needsReview']
             kinds.update(issue['kind'] for issue in analysis['issues'])
         result[name] = {'statuses': {key: statuses[key] for key in STATUSES},
-                        'needsReviewCount': review, 'issueTypes': dict(kinds)}
+                        'needsReviewCount': review, 'issueTypes': dict(kinds),
+                        'screenCounts': {**{field: screen[key] for key, field in SCREEN_COUNTS.items()},
+                                         'total': len(items)},
+                        'causeQuestionCounts': {area: causes[area] for area in CAUSE_AREAS},
+                        'analysisStatusCounts': {status: analysis_statuses[status] for status in ANALYSIS_STATUSES}}
     return {'variants': result, 'issueCountsIncludeMultipleIssuesPerQuestion': True,
+            'causeCountsIncludeMultipleAreasPerQuestion': True, 'causeCountUnit': 'QUESTION',
             'basis': 'LATEST_HUMAN_CONDITION_REVIEW_OVER_AUTOMATIC', 'criterionPassRatesBasis': 'AUTOMATIC'}

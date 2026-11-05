@@ -2,7 +2,7 @@ import hashlib
 import json
 from copy import deepcopy
 from datetime import timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, Query, Response
 from sqlalchemy import select, update
@@ -13,7 +13,7 @@ from app.api.policies import Cursor, Limit
 from app.core.errors import ApiError
 from app.models.evaluation import Evaluation, EvaluationItem, EvaluationReview
 from app.schemas.evaluation import (Criterion, EvaluationCreate, EvaluationInputs, EvaluationItemResponse,
-    EvaluationItemSummary, EvaluationResponse, EvaluationSummary, EvaluationRerun, EvaluationComparison)
+    EvaluationItemSummary, EvaluationResponse, CauseArea, AnalysisStatus, ScreenStatus, EvaluationSummary, EvaluationRerun, EvaluationComparison)
 from app.schemas.responses import Data, Page, ERROR_RESPONSES
 from app.services import evaluations as service
 from app.services import evaluation_analysis as analysis
@@ -115,14 +115,27 @@ def get_summary(evaluationId: ResourceId, service_row: OwnedService, db: Db):
     return {'data': {**service.aggregate(row, items), 'analysis': analysis.summarize(row, items, reviews)}}
 
 
+def analyzed_item_summary(run, item, detail):
+    return {**service.item_summary(item, run.inputs),
+            'resultStatus': detail['status'], 'needsReview': detail['needsReview'],
+            'screenStatus': detail['screenStatus'], 'analysisStatus': detail['analysisStatus'],
+            'activeHypothesisAreas': detail['activeHypothesisAreas']}
+
+
 @router.get('/{evaluationId}/items', response_model=Data[Page[EvaluationItemSummary]])
 def list_items(evaluationId: ResourceId, service_row: OwnedService, db: Db,
                limit: Limit = 20, cursor: Cursor = None, criterion: Annotated[Criterion | None, Query(description='평가 inputs.criteria.definitions에 포함된 기준만 필터링할 수 있습니다. 미포함 기준은 빈 목록을 반환합니다.')] = None,
                resultStatus: Annotated[str | None, Query(pattern=r'^(MET|UNMET|REVIEW_REQUIRED|JUDGMENT_ERROR|EXECUTION_ERROR|NOT_RUN|IN_PROGRESS)$')] = None,
                issueKind: IssueKind | None = None,
+               side: Literal['a', 'b'] = 'a',
+               screenStatus: ScreenStatus | None = None,
+               causeArea: CauseArea | None = None,
+               analysisStatus: AnalysisStatus | None = None,
                change: Annotated[str | None, Query(pattern=r'^(IMPROVED|WORSENED|UNCHANGED_PASS|UNCHANGED_FAIL|NOT_COMPARABLE)$', description='criterion이 필수이며 COMPARE 평가에서만 사용합니다. SINGLE 평가는 comparison API를 사용하세요.')] = None):
     """Page through per-question improvements/regressions without returning all answers at once."""
     row = service.get_run(db, service_row.id, evaluationId)
+    if side not in service.side_names(row.inputs):
+        raise ApiError(400, 'INVALID_ANALYSIS_SIDE', '평가한 대상만 조회할 수 있습니다.')
     if change and criterion is None:
         raise ApiError(400, 'VALIDATION_ERROR', 'change 필터에는 criterion이 필요합니다.')
     if change and row.inputs.get('mode') == 'SINGLE':
@@ -130,27 +143,32 @@ def list_items(evaluationId: ResourceId, service_row: OwnedService, db: Db,
     if criterion and criterion not in row.inputs['criteria']['definitions']:
         return {'data': {'items': [], 'nextCursor': None}}
     statement = select(EvaluationItem).where(EvaluationItem.evaluation_id == row.id)
-    if change or resultStatus or issueKind:
+    if change or resultStatus or issueKind or screenStatus or causeArea or analysisStatus:
         # Bounded to 200 items by confirmed test-set constraints; filter IDs before paging.
         items = db.scalars(statement).all()
         ids = []
         filtered_reviews = latest_reviews(db, [item.id for item in items])
         for item in items:
-            detail = analysis.item_analysis(row, item, filtered_reviews)['a']
+            detail = analysis.item_analysis(row, item, filtered_reviews)[side]
             if change and service.change(item.a, item.b, criterion) != change:
                 continue
             if resultStatus and detail['status'] != resultStatus:
                 continue
             if issueKind and not any(issue['kind'] == issueKind for issue in detail['issues']):
                 continue
+            if screenStatus and detail['screenStatus'] != screenStatus:
+                continue
+            if causeArea and causeArea not in detail['activeHypothesisAreas']:
+                continue
+            if analysisStatus and detail['analysisStatus'] != analysisStatus:
+                continue
             ids.append(item.id)
         statement = statement.where(EvaluationItem.id.in_(ids))
-    scope = f'evaluationItems:{row.id}:{criterion}:{change}:{resultStatus}:{issueKind}'
+    scope = f'evaluationItems:{row.id}:{criterion}:{change}:{resultStatus}:{issueKind}:{side}:{screenStatus}:{causeArea}:{analysisStatus}'
     rows, next_cursor = paginate(db, statement, EvaluationItem, scope, limit, cursor)
     reviews = latest_reviews(db, [item.id for item in rows])
-    return {'data': {'items': [{**service.item_summary(item, row.inputs),
-        'resultStatus': analysis.item_analysis(row, item, reviews)['a']['status'],
-        'needsReview': analysis.item_analysis(row, item, reviews)['a']['needsReview']} for item in rows], 'nextCursor': next_cursor}}
+    return {'data': {'items': [analyzed_item_summary(row, item, analysis.item_analysis(row, item, reviews)[side])
+                              for item in rows], 'nextCursor': next_cursor}}
 
 
 @router.get('/{evaluationId}/items/{itemId}', response_model=Data[EvaluationItemResponse])
@@ -162,7 +180,7 @@ def get_item(evaluationId: ResourceId, itemId: ResourceId, service_row: OwnedSer
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '평가 문항을 찾을 수 없습니다.')
     reviews = latest_reviews(db, [item.id])
     details = analysis.item_analysis(row, item, reviews)
-    return {'data': {**service.item_summary(item, row.inputs), 'input': item.input, 'a': item.a, 'b': item.b,
+    return {'data': {**analyzed_item_summary(row, item, details['a']), 'input': item.input, 'a': item.a, 'b': item.b,
         'resultStatus': details['a']['status'], 'needsReview': details['a']['needsReview'], 'analysis': details,
         'reviewRevision': item.review_revision, 'latestReviews': list(reviews.values())}}
 

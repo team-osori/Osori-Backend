@@ -4,6 +4,10 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 from app.schemas.policy import Id
 
+CauseArea = Literal['RETRIEVAL', 'PROMPT', 'MODEL']
+AnalysisStatus = Literal['HYPOTHESIS_AVAILABLE', 'UNDETERMINED', 'UNAVAILABLE', 'NOT_APPLICABLE']
+ScreenStatus = Literal['CORRECT', 'INCORRECT', 'PENDING', 'REMAINING', 'EXECUTION_ERROR', 'JUDGMENT_ERROR', 'REVIEW_REQUIRED']
+
 Criterion = Literal['retrieval', 'grounding', 'response', 'policy', 'questionResolution', 'communicationQuality']
 
 
@@ -184,6 +188,9 @@ class EvaluationItemSummary(BaseModel):
     changes: dict[str, str]
     resultStatus: str | None = None
     needsReview: bool = False
+    screenStatus: ScreenStatus
+    analysisStatus: AnalysisStatus
+    activeHypothesisAreas: list[CauseArea]
 
 
 class EvaluationSide(BaseModel):
@@ -221,7 +228,17 @@ class EvaluationInputs(BaseModel):
     sourceEvaluationId: str | None = None
 
 
+class ScoreSummary(BaseModel):
+    average: float | None
+    denominator: int
+    minimum: int = 0
+    maximum: int = 4
+    passThreshold: int
+    basis: Literal['AUTOMATIC'] = 'AUTOMATIC'
+
+
 class CriterionCounts(BaseModel):
+    scoreSummary: ScoreSummary | None = None
     passed: int = Field(alias='pass')
     fail: int
     notEvaluable: int
