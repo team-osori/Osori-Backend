@@ -61,7 +61,7 @@ def build_inputs(db, service, body, judge):
     if not 1 <= len(testset['questions']) <= 200:
         raise ApiError(409, 'INVALID_TESTSET', '평가 가능한 확정 문항이 필요합니다.')
     criteria = CRITERIA
-    if mode == 'SINGLE' or body.mode == 'COMPARE':
+    if not source and (mode == 'SINGLE' or body.mode == 'COMPARE'):
         try:
             testset = condition_evaluation.prepare_questions(testset)
         except (ValueError, TypeError, KeyError):
