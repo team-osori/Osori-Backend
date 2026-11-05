@@ -5,6 +5,13 @@ from uuid import uuid4
 
 from test_mysql_auth_integration import mysql_client  # noqa: F401
 from test_policy_testsets import setup
+from test_question_conditions import assert_review_timestamp_consistency
+
+
+def test_mysql_review_timestamp_matches_persisted_question_and_audit(mysql_client, monkeypatch):
+    """Check review audit consistency after a real MySQL DATETIME round trip."""
+    client, _, _, _ = mysql_client
+    assert_review_timestamp_consistency(client, monkeypatch, login='q' + uuid4().hex[:20])
 
 
 def test_mysql_concurrent_edit_records_only_winning_change(mysql_client):

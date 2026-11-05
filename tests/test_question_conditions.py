@@ -1,6 +1,59 @@
 from copy import deepcopy
+from datetime import UTC, datetime
+
+import pytest
 
 from tests.test_policy_testsets import account, setup
+
+
+@pytest.mark.parametrize('initial_count', [1, 2])
+def test_legacy_edits_preserve_unique_condition_ids_for_repeated_behaviors(db_and_client, initial_count):
+    """Repeated legacy behaviors retain distinct IDs without altering prior audit states."""
+    _, client = db_and_client
+    headers, _, _, _, _, path, question = setup(client)
+    repeated = question['forbiddenBehaviors'][0]
+    question['forbiddenBehaviors'] = [repeated] * initial_count
+    added = client.post(path + '/questions', json={**question, 'expectedRevision': 1}, headers=headers)
+    assert added.status_code == 201
+    qpath = added.headers['location']
+    current = added.json()['data']
+    for count in [initial_count + 1, initial_count + 1, initial_count]:
+        previous = current['questions'][0]
+        previous_ids = [c['id'] for c in previous['expectedConditions']]
+        edited = client.patch(qpath, json={**question, 'forbiddenBehaviors': [repeated] * count,
+            'expectedRevision': current['revision']}, headers=headers)
+        assert edited.status_code == 200, edited.text
+        current = edited.json()['data']
+        ids = [c['id'] for c in current['questions'][0]['expectedConditions']]
+        assert len(ids) == len(set(ids)) == count + 1
+        preserved = min(len(previous_ids), len(ids))
+        assert ids[:preserved] == previous_ids[:preserved]
+        event = client.get(qpath + '/history?limit=1', headers=headers).json()['data']['items'][0]
+        assert event['before'] == previous  # Matching must not mutate the audit pre-image.
+        assert event['after'] == current['questions'][0]
+
+
+def assert_review_timestamp_consistency(client, monkeypatch, *, login='owner'):
+    """Exercise separate requests so MySQL's persisted timestamp is actually reloaded."""
+    headers, _, _, _, _, path, question = setup(client, login=login)
+    added = client.post(path + '/questions', json={**question, 'expectedRevision': 1}, headers=headers)
+    qpath = added.headers['location']
+    instant = datetime(2026, 11, 5, 8, 30, 59, 999999, tzinfo=UTC)
+    monkeypatch.setattr('app.api.testsets.now', lambda: instant)
+    for revision, status in [(2, 'approved'), (3, 'rejected')]:
+        response = client.post(qpath + '/review', json={'expectedRevision': revision, 'status': status}, headers=headers)
+        assert response.status_code == 200, response.text
+        returned = response.json()['data']['questions'][0]
+        reloaded = client.get(qpath, headers=headers).json()['data']
+        history = client.get(qpath + '/history?limit=1', headers=headers).json()['data']['items'][0]
+        assert returned == reloaded == history['after']
+        assert reloaded['reviewedAt'] == '2026-11-05T08:30:59Z'
+
+
+def test_review_timestamp_matches_persisted_question_and_audit(db_and_client, monkeypatch):
+    """Approval and rejection use the same second-precision value in every API view."""
+    _, client = db_and_client
+    assert_review_timestamp_consistency(client, monkeypatch)
 
 
 def test_condition_ids_review_history_and_snapshot(db_and_client):

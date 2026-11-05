@@ -98,11 +98,13 @@ def question_payload(db, project_id, version, body: QuestionBody, *, previous=No
     if payload['expectedConditions'] is None:
         # Compatibility for old clients. Preserve IDs only for unchanged conditions.
         conditions = legacy_conditions(payload, uid())
-        prior = (previous or {}).get('expectedConditions') or []
+        available = (previous or {}).get('expectedConditions') or []
         for condition in conditions:
-            match = next((c for c in prior if all(c.get(k) == v for k, v in condition.items() if k != 'id')), None)
+            match = next((c for c in available if all(c.get(k) == v for k, v in condition.items() if k != 'id')), None)
             if match:
                 condition['id'] = match['id']
+                # Consume each ID once without mutating the audit's original list.
+                available = [c for c in available if c['id'] != match['id']]
     else:
         conditions = payload['expectedConditions']
         allowed_ids = {c['id'] for c in (previous or {}).get('expectedConditions', [])}

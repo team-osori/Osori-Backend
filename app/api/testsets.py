@@ -168,7 +168,8 @@ def review_question(testSetId: ResourceId, versionId: ResourceId, questionId: Re
     row = question_row(db, version.id, questionId)
     before = service.question_data(row)
     row.review_status, row.reviewed_by, row.review_note = body.status, user.id, body.note
-    row.reviewed_at = now()
+    # Match MySQL DATETIME precision before freezing the audit JSON pre-commit.
+    row.reviewed_at = now().replace(microsecond=0)
     service.record_history(db, version, row, user.id, 'reviewed', before=before, note=body.note)
     db.commit()
     return {'data': service.version_data(db, version)}
