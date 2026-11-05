@@ -121,3 +121,41 @@ def test_csv_limits_format_capacity_and_scope(db_and_client, monkeypatch):
     other = account(client, 'other-import')
     assert upload(client, path, other, content).status_code == 404
     assert client.get(path, headers=headers).json()['data']['revision'] == 1
+
+
+def test_generation_exact_type_counts_replay_and_wrong_distribution(db_and_client):
+    from app.main import app
+    from app.services.question_generation import get_question_generator
+    _, client = db_and_client
+    headers, _, _, _, _, path, question = setup(client)
+    calls = []
+    counts = {'normal': 2, 'ambiguous': 1, 'missing_document': 1, 'policy_trap': 1, 'boundary': 0}
+
+    class Generator:
+        wrong = False
+        def generate(self, *, policies, count, category_counts):
+            calls.append(category_counts)
+            assert count == 5
+            categories = [key for key, value in category_counts.items() for _ in range(value)]
+            if self.wrong:
+                categories[0] = 'policy_trap'
+            return {'questions': [{**question, 'category': category, 'question': f'질문 {i}'} for i, category in enumerate(categories)]}
+
+    generator = Generator()
+    app.dependency_overrides[get_question_generator] = lambda: generator
+    body = {'expectedRevision': 1, 'categoryCounts': counts}
+    h = {**headers, 'Idempotency-Key': 'exact-counts'}
+    for invalid in ({'count': 6}, {'categories': ['normal']}, {'categoryCounts': {'normal': True}},
+                    {'categoryCounts': {}}, {'categoryCounts': {'normal': 0}},
+                    {'categoryCounts': {'normal': 50, 'policy_trap': 1}}, {'categoryCounts': {'unknown': 1}}):
+        assert client.post(path + '/questions/generate', json={**body, **invalid}, headers=h).status_code == 400
+    generator.wrong = True
+    bad = client.post(path + '/questions/generate', json=body, headers=h)
+    assert bad.status_code == 502 and bad.json()['error']['code'] == 'GENERATION_CATEGORY_COUNT_MISMATCH'
+    assert client.get(path, headers=headers).json()['data']['revision'] == 1
+    generator.wrong = False
+    good = client.post(path + '/questions/generate', json=body, headers=h)
+    assert good.status_code == 200, good.text
+    assert good.json()['data']['questionCount'] == 5
+    assert client.post(path + '/questions/generate', json=body, headers=h).json() == good.json()
+    assert len(calls) == 2

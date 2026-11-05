@@ -1,5 +1,6 @@
 import hashlib
 import json
+from collections import Counter
 from datetime import timedelta
 from typing import Annotated
 
@@ -301,11 +302,15 @@ def generate(testSetId: ResourceId, versionId: ResourceId, body: Generate, proje
     sources = service.policy_versions(db, project.id, version.policy_version_ids, allow_deleted=True)
     try:
         options = {'categories': body.categories} if body.categories is not None else {}
+        if body.categoryCounts is not None:
+            options['category_counts'] = body.categoryCounts
         generated = GeneratedQuestions.model_validate(generator.generate(policies=[service.policy_version_data(p) for p in sources], count=body.count, **options))
         if len(generated.questions) != body.count:
             raise ApiError(502, 'GENERATION_COUNT_MISMATCH', '생성된 문항 수가 요청과 다릅니다.')
         if body.categories is not None and {q.category for q in generated.questions} != set(body.categories):
             raise ApiError(502, 'GENERATION_CATEGORY_MISMATCH', '생성된 문항 유형이 요청과 다릅니다.')
+        if body.categoryCounts is not None and Counter(q.category for q in generated.questions) != {k: v for k, v in body.categoryCounts.items() if v}:
+            raise ApiError(502, 'GENERATION_CATEGORY_COUNT_MISMATCH', '생성된 유형별 문항 수가 요청과 다릅니다.')
         try:
             payloads = [service.question_payload(db, project.id, version, question, generated=True) for question in generated.questions]
         except ApiError as exc:
