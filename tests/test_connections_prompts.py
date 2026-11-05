@@ -303,3 +303,16 @@ def test_test_submission_validation_and_ownership(setup):
     assert enqueue(client, headers, service2, prompt, revision=1).status_code == 404
     assert client.get(service2 + '/connection-tests/' + response.json()['data']['id'], headers=headers).status_code == 404
     assert client.get(service2 + '/prompts/' + prompt['id'], headers=headers).status_code == 404
+
+
+def test_default_prompt_name_keeps_first_version_content(setup):
+    _, client, headers, service, _ = setup
+    response = client.post(service + '/prompts', headers=headers, json={'content': '  최초 프롬프트\n'})
+    assert response.status_code == 201
+    prompt = response.json()['data']
+    assert prompt['name'] == '기본 프롬프트'
+    assert prompt['currentVersion']['version'] == 1
+    assert prompt['currentVersion']['content'] == '  최초 프롬프트\n'
+    assert prompt['currentVersionId'] == prompt['currentVersion']['id']
+    assert client.get(response.headers['location'], headers=headers).json()['data'] == prompt
+    assert client.post(service + '/prompts', headers=headers, json={'name': '  ', 'content': 'x'}).status_code == 400

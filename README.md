@@ -15,6 +15,8 @@ cp .env.example .env
 .venv/bin/python -m uvicorn app.main:app --reload --port 8000
 ```
 
+스캔 PDF의 한국어·영어 OCR에는 Poppler와 Tesseract(`kor`, `eng` 모델)가 필요합니다. 설치와 업로드·검토·저장 계약은 [정책 문서 OCR 안내](docs/POLICY_TESTSETS.md#정책-규칙-입력과-검증-21)를 참고하세요.
+
 DB 변경은 Alembic 마이그레이션으로 적용합니다. 이전에 자동 생성한 테이블이 있는 개발 DB라면 마이그레이션 전에 스키마를 확인해야 합니다. API 문서는 `http://127.0.0.1:8000/docs`에서 확인할 수 있습니다.
 
 ## 팀 연동 안내
