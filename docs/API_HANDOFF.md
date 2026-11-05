@@ -125,3 +125,16 @@ OSORI_TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/osori_test?ch
 ## 커서 입력 검증
 
 프로젝트·프롬프트·정책·테스트셋·평가 조회는 공통 검증 함수를 사용합니다. 기존 커서 JSON 형식은 유지합니다. 잘못된 커서는 `400 INVALID_CURSOR`이며 DB 내부 오류로 넘기지 않습니다. 중복 JSON 키·NaN·Infinity·여분 필드, 불리언 형식 버전, 비 ASCII·제어문자·유효하지 않은 유니코드 ID, 비정규/시간대 포함/1000년 이전 날짜, signed INT 범위 밖의 버전 숫자를 거부합니다. 프롬프트 버전 커서의 before도 JSON 정수 1~2,147,483,647만 허용합니다.
+
+## 프로젝트 진행 요약 (#16)
+
+프로젝트 생성·단건·목록 응답에 `progress`를 포함합니다. 별도 프로젝트별 요청 없이 목록에서 단계·최신 시험지·최신 평가·사람 검토 수를 함께 표시할 수 있습니다.
+
+- `stage`: 최신 평가가 COMPLETED/PARTIAL_FAILED이면 3(오답 노트), 평가 실행이 있거나 확정 시험지가 있으면 2(채점), 나머지는 1(시험지).
+- `unlockedStage`: 확정 시험지가 있으면 2, 완료 또는 부분 실패한 평가 이력이 있으면 3. 최신 초안을 만들거나 재평가가 진행·실패해도 과거 이력으로 열린 단계는 유지합니다.
+- `status`: 준비만 진행 중이면 SETUP, 확정 시험지 또는 실행/재시도 단계는 RUNNING, 최신 평가가 COMPLETED/PARTIAL_FAILED이면 DONE입니다. DONE은 평가 실행 종료를 뜻하며 사람 검토 완료 여부는 `reviewedQuestions`로 별도 확인합니다. FAILED는 2단계 RUNNING(재시도 필요), 실제 상태는 `evaluation.status`로 구분합니다.
+- `testSet`: 프로젝트 전체에서 가장 최근 생성한 시험지 버전의 `versionId`, `label`(vN), `status`, `questionCount`. 없으면 null입니다.
+- `evaluation`: 최신 접수 평가의 `id/status/completedQuestions/totalQuestions/reviewedQuestions`. 없으면 null입니다. `reviewedQuestions`는 모든 기대 조건에 최신 사람 pass/fail 판정이 있는 문항 수입니다. COMPARE는 A/B 양쪽 모두 필요하며, 일부 조건만 검토했거나 최신 판정이 not_evaluable이면 제외합니다. 반복 수정 이력은 중복 계산하지 않습니다.
+- `lastEvaluatedAt`: 가장 최근 평가 종료 시각(실패 포함), 없으면 null. `promptVersion`: 최신 평가 A측에 명시적으로 선택된 프롬프트 버전 번호, 기업 설정 프롬프트 사용 또는 평가 없음은 null.
+
+최신 항목은 생성 시각·ID로 결정하며 같은 시각의 시험지는 버전 번호를 먼저 비교합니다. 목록에 포함된 소유 프로젝트만 일괄 집계하고 과거 평가 스냅샷·답변·인증정보를 로드하지 않습니다. DB 마이그레이션은 필요 없습니다.

@@ -15,6 +15,7 @@ from app.models.project import Chatbot, Project
 from app.models.connection import Connection
 from app.schemas.project import ChatbotCreate, ProjectCreate
 from app.services.auth import now
+from app.services.project_progress import project_progress
 
 from app.schemas.responses import Data, Page, ProjectResponse, ChatbotResponse, ERROR_RESPONSES
 
@@ -26,11 +27,12 @@ def iso(value: datetime) -> str:
     return value.replace(tzinfo=UTC).isoformat().replace('+00:00', 'Z')
 
 
-def project_data(project: Project, service_count: int) -> dict:
+def project_data(project: Project, service_count: int, progress=None) -> dict:
     """Serialize a project with its current chatbot registration count."""
     return {'id': project.id, 'name': project.name, 'description': project.description,
             'revision': project.revision, 'serviceCount': service_count,
-            'createdAt': iso(project.created_at), 'updatedAt': iso(project.updated_at)}
+            'createdAt': iso(project.created_at), 'updatedAt': iso(project.updated_at),
+            **({'progress': progress} if progress is not None else {})}
 
 
 def chatbot_data(service: Chatbot, has_connection: bool = False) -> dict:
@@ -79,14 +81,15 @@ def list_projects(user: CurrentUser, db: Db,
         last = page[-1][0]
         next_cursor = base64.urlsafe_b64encode(json.dumps({'v': 1, 'owner': user.id,
             'createdAt': last.created_at.isoformat(), 'id': last.id}).encode()).decode()
-    return {'data': {'items': [project_data(p, int(has)) for p, has in page], 'nextCursor': next_cursor}}
+    progress = project_progress(db, [p.id for p, _ in page])
+    return {'data': {'items': [project_data(p, int(has), progress[p.id]) for p, has in page], 'nextCursor': next_cursor}}
 
 
 @router.get('/{projectId}', response_model=Data[ProjectResponse])
 def get_project(project: OwnedProject, db: Db):
     """Return a project after authentication and ownership have been checked."""
     has = db.scalar(select(exists().where(Chatbot.project_id == project.id)))
-    return {'data': project_data(project, int(has))}
+    return {'data': project_data(project, int(has), project_progress(db, [project.id])[project.id])}
 
 
 @router.post('/{projectId}/services', status_code=201, tags=['services'], response_model=Data[ChatbotResponse])

@@ -135,3 +135,21 @@ def test_mysql_a_generation_through_b_analysis_and_rerun(mysql_client, monkeypat
     body = {key: original[key] for key in ('connectionRevision', 'testSetVersionId')}
     ready = (factory, client, headers, service, body, original)
     test_generated_a_conditions_flow_through_b_analysis_and_frozen_rerun(ready, monkeypatch)
+
+
+def test_mysql_project_progress_and_review_counts(mysql_client, monkeypatch):
+    """Exercise window functions, JSON paths and latest human decisions on MySQL."""
+    from app.main import app
+    from app.services.evaluation_judge import get_evaluation_judge
+    from test_condition_evaluation import ConditionJudge, answer
+    from test_project_progress import exercise_finished_progress
+    client, factory, _, _ = mysql_client
+    headers, service, original, _ = prepare(factory, client, monkeypatch)
+    judge = ConditionJudge()
+    app.dependency_overrides[get_evaluation_judge] = lambda: judge
+    body = {key: original[key] for key in ('connectionRevision', 'testSetVersionId')}
+    path = submit(client, headers, service, body)
+    asyncio.run(worker.process_one(factory, sender=answer, judge=judge))
+    item = client.get(path + '/items', headers=headers).json()['data']['items'][0]
+    detail = client.get(path + '/items/' + item['id'], headers=headers).json()['data']
+    exercise_finished_progress(factory, client, headers, service, path, detail)
