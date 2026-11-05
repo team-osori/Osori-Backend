@@ -124,3 +124,13 @@ def test_a_display_categories_preserve_diagnostic_conditions():
     normalized = prepare_questions({'policies': [policy], 'questions': [question]})['questions'][0]['expectedConditions']
     assert [c['category'] for c in normalized] == ['policy', 'response', 'grounding', 'retrieval']
     assert [c['criterion'] for c in normalized] == ['policy', 'questionResolution', 'grounding', 'retrieval']
+
+
+def test_v2_compare_rejects_filter_for_legacy_only_criterion(single_ready):
+    """An unavailable legacy criterion must return 400 rather than a lookup failure."""
+    factory, client, headers, service, body, original = single_ready
+    path = submit(client, headers, service, {**original, 'mode': 'COMPARE'})
+    for extra in ({}, {'change': 'NOT_COMPARABLE'}):
+        response = client.get(path + '/items', headers=headers, params={'criterion': 'retrieval', **extra})
+        assert response.status_code == 400
+        assert response.json()['error']['code'] == 'INVALID_CRITERION'
