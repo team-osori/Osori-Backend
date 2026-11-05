@@ -70,6 +70,20 @@ def generation_schema():
     return schema
 
 
+def validate_generated_questions(generated, count, selected):
+    """Keep generation diagnostics identical across provider adapters."""
+    if len(generated.questions) != count:
+        raise ApiError(502, 'GENERATION_COUNT_MISMATCH', '생성된 문항 수가 요청과 다릅니다.')
+    if {q.category for q in generated.questions} != set(selected):
+        raise ApiError(502, 'GENERATION_CATEGORY_MISMATCH', '생성된 문항 유형이 요청과 다릅니다.')
+    if len({q.question.strip() for q in generated.questions}) != count:
+        raise ApiError(502, 'GENERATION_DUPLICATE_QUESTIONS', '생성된 질문에 중복이 있습니다.')
+    if any(not q.expectedConditions or any(c.id is not None for c in q.expectedConditions)
+           for q in generated.questions):
+        raise ApiError(502, 'GENERATION_CONDITIONS_INVALID', '생성된 기대 조건을 확인할 수 없습니다.')
+    return generated
+
+
 class OpenAIQuestionGenerator:
     def __init__(self, api_key, model=DEFAULT_MODEL):
         self._api_key = api_key
@@ -119,16 +133,7 @@ class OpenAIQuestionGenerator:
             if len(texts) != 1:
                 raise ValueError('Missing structured output')
             generated = GeneratedQuestions.model_validate_json(texts[0])
-            if len(generated.questions) != count:
-                raise ApiError(502, 'GENERATION_COUNT_MISMATCH', '생성된 문항 수가 요청과 다릅니다.')
-            if {q.category for q in generated.questions} != set(selected):
-                raise ApiError(502, 'GENERATION_CATEGORY_MISMATCH', '생성된 문항 유형이 요청과 다릅니다.')
-            if len({q.question.strip() for q in generated.questions}) != count:
-                raise ApiError(502, 'GENERATION_DUPLICATE_QUESTIONS', '생성된 질문에 중복이 있습니다.')
-            if any(not q.expectedConditions or any(c.id is not None for c in q.expectedConditions)
-                   for q in generated.questions):
-                raise ApiError(502, 'GENERATION_CONDITIONS_INVALID', '생성된 기대 조건을 확인할 수 없습니다.')
-            return generated
+            return validate_generated_questions(generated, count, selected)
         except ApiError:
             raise
         except TimeoutError:

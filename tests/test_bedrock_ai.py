@@ -100,7 +100,7 @@ def test_aws_errors_do_not_leak_or_fall_back_to_personal_apis(stubbed, aws_code,
 
 @pytest.mark.parametrize('reason,code', [('max_tokens', 'GENERATION_INCOMPLETE'),
     ('guardrail_intervened', 'GENERATION_REFUSED'), ('content_filtered', 'GENERATION_REFUSED'),
-    ('end_turn', 'INVALID_GENERATION_OUTPUT')])
+    ('end_turn', 'GENERATION_SCHEMA_INVALID')])
 def test_incomplete_or_refused_output_never_becomes_a_generated_question(stubbed, reason, code):
     stubbed.add_response('converse', tool_response({}, reason=reason))
     with pytest.raises(ApiError) as error:
@@ -108,14 +108,29 @@ def test_incomplete_or_refused_output_never_becomes_a_generated_question(stubbed
     assert error.value.code == code
 
 
-def test_wrong_tool_and_forged_question_ids_are_rejected(stubbed):
-    for output in [tool_response({'questions': [candidate()]}, name='unrequested-tool'),
-                   tool_response({'questions': [{**candidate(), 'expectedConditions': [
-                       {**candidate()['expectedConditions'][0], 'id': 'model-invented-id'}]}]})]:
-        stubbed.add_response('converse', output)
-        with pytest.raises(ApiError) as error:
-            BedrockQuestionGenerator(runtime.DEFAULT_MODEL, runtime.DEFAULT_REGION).generate(policies=[], count=1)
-        assert error.value.code == 'INVALID_GENERATION_OUTPUT'
+@pytest.mark.parametrize('output,code', [
+    (tool_response({'questions': [candidate()]}, name='unrequested-tool'), 'GENERATION_SCHEMA_INVALID'),
+    (tool_response({'questions': [{**candidate(), 'expectedConditions': [
+        {**candidate()['expectedConditions'][0], 'id': 'model-invented-id'}]}]}), 'GENERATION_CONDITIONS_INVALID'),
+])
+def test_wrong_tool_and_forged_question_ids_are_rejected(stubbed, output, code):
+    stubbed.add_response('converse', output)
+    with pytest.raises(ApiError) as error:
+        BedrockQuestionGenerator(runtime.DEFAULT_MODEL, runtime.DEFAULT_REGION).generate(policies=[], count=1)
+    assert error.value.code == code
+
+
+@pytest.mark.parametrize('questions,count,code', [
+    ([candidate()], 2, 'GENERATION_COUNT_MISMATCH'),
+    ([candidate('exception')], 1, 'GENERATION_CATEGORY_MISMATCH'),
+    ([candidate(), candidate()], 2, 'GENERATION_DUPLICATE_QUESTIONS'),
+])
+def test_bedrock_preserves_main_generation_diagnostics(stubbed, questions, count, code):
+    stubbed.add_response('converse', tool_response({'questions': questions}))
+    with pytest.raises(ApiError) as error:
+        BedrockQuestionGenerator(runtime.DEFAULT_MODEL, runtime.DEFAULT_REGION).generate(
+            policies=[], count=count, categories=['normal'])
+    assert error.value.code == code
 
 
 def test_oversized_input_does_not_make_a_paid_call(stubbed):

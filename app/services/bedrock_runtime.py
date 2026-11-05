@@ -1,7 +1,11 @@
 """Bounded Converse transport using the AWS SDK credential chain, including EC2 IAM roles."""
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from functools import lru_cache
 import json
 import os
+from threading import BoundedSemaphore
 
 import boto3
 from botocore.config import Config
@@ -20,6 +24,39 @@ class BedrockError(Exception):
     def __init__(self, code):
         super().__init__(code)
         self.code = code
+
+
+class _BoundedJudgeCalls:
+    """Keep one unfinished SDK call per process, including calls whose waiter was cancelled."""
+    def __init__(self):
+        """Create a single-call budget and an executor isolated from asyncio's default pool."""
+        self._slots = BoundedSemaphore(1)
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='bedrock-judge')
+
+    async def run(self, call, **kwargs):
+        """Keep capacity owned by the underlying concurrent future, not by its async waiter."""
+        if not self._slots.acquire(blocking=False):
+            raise BedrockError('BUSY')
+        try:
+            future = self._executor.submit(copy_context().run, call, **kwargs)
+        except RuntimeError:
+            self._slots.release()
+            raise BedrockError('UNAVAILABLE') from None
+        except BaseException:
+            self._slots.release()
+            raise
+        # Cancellation of an asyncio waiter cannot stop a running boto3 call.
+        # Release only when the concurrent future really finishes (or cancels before starting).
+        future.add_done_callback(lambda _: self._slots.release())
+        return await asyncio.wrap_future(future)
+
+
+_judge_calls = _BoundedJudgeCalls()
+
+
+async def converse_json_async(**kwargs):
+    """Isolate judgment SDK calls from asyncio's default executor without an unbounded queue."""
+    return await _judge_calls.run(converse_json, **kwargs)
 
 
 def configured_region():

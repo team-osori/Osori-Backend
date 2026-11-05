@@ -32,9 +32,17 @@ Pydantic으로 검증한다. 실제 도구 실행은 없다. native structured o
 질문 생성은 연결 5초·응답 읽기 55초, 판정은 연결 5초·읽기 110초·워커 120초다.
 입력은 512KiB, 응답은 2MiB이며 토큰 제한으로 잘린 출력은 완료 결과로 저장하지 않는다.
 
+워커의 120초 제한은 판정 대기를 종료하며 실행 중인 SDK 스레드를 강제로 중단하지 않는다.
+판정은 기본 asyncio 실행기와 분리된 전용 실행기를 사용하며, 프로세스당 미종료 SDK 호출은 최대 1개다.
+시간 초과·취소 후에도 실제 호출이 끝날 때까지 슬롯을 유지한다. 슬롯이 차 있으면 새 SDK 요청을
+제출하거나 대기열에 쌓지 않고 JUDGE_BUSY로 기록한다. 호출이 끝나면 슬롯을 반환해 다시 사용할 수 있다.
+늦게 도착한 응답은 이미 저장한 시간 초과 결과를 덮어쓰지 않는다.
+
 주요 오류는 GENERATION_/JUDGE_ 접두사의 AUTH_FAILED, RATE_LIMITED, TIMEOUT,
 INVALID_REQUEST, UNAVAILABLE, INCOMPLETE, REFUSED, RESPONSE_TOO_LARGE다.
-잘못된 모델 출력은 INVALID_GENERATION_OUTPUT/INVALID_JUDGE_OUTPUT이다.
+잘못된 생성 형식은 GENERATION_SCHEMA_INVALID이며 개수·유형·중복·기대 조건 오류는
+GENERATION_COUNT_MISMATCH / GENERATION_CATEGORY_MISMATCH / GENERATION_DUPLICATE_QUESTIONS /
+GENERATION_CONDITIONS_INVALID로 구분한다. 잘못된 판정 출력은 INVALID_JUDGE_OUTPUT이다.
 기업 API 답변 성공과 평가 모델 실패는 별도로 집계하며 모델 오류를 임의 통과·미통과로 만들지 않는다.
 
 ## 배포

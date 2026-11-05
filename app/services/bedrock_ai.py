@@ -1,5 +1,4 @@
 """Bedrock implementations of the existing question-generation and judgment contracts."""
-import asyncio
 import hashlib
 
 from app.core.errors import ApiError
@@ -9,7 +8,8 @@ from app.schemas.policy import GeneratedQuestions
 from app.services import bedrock_runtime as runtime
 from app.services.evaluation_judge import JudgeError
 from app.services.evaluation_judge_contract import INSTRUCTIONS as JUDGE_INSTRUCTIONS, judgment_schema
-from app.services.question_generation import INSTRUCTIONS as GENERATION_INSTRUCTIONS, generation_schema
+from app.services.question_generation import (INSTRUCTIONS as GENERATION_INSTRUCTIONS,
+    generation_schema, validate_generated_questions)
 
 MESSAGES = {
     'AUTH_FAILED': '서버의 Bedrock 호출 권한과 IAM 역할을 확인하세요.',
@@ -22,6 +22,7 @@ MESSAGES = {
     'INVALID_OUTPUT': '유효한 구조화 결과를 받지 못했습니다.',
     'INPUT_TOO_LARGE': '입력은 최대 512KiB입니다. 정책·답변·검색 자료의 범위를 줄여 주세요.',
     'RESPONSE_TOO_LARGE': '모델 응답이 허용 크기를 초과했습니다.',
+    'BUSY': '이전 Bedrock 판정 호출이 아직 종료되지 않았습니다. 종료 후 새 평가를 요청하세요.',
 }
 
 
@@ -38,20 +39,14 @@ class BedrockQuestionGenerator:
                 schema=generation_schema(), name='submit_questions', max_tokens=min(32000, 1000 + count * 1400),
                 read_timeout=55)
             generated = GeneratedQuestions.model_validate(output)
-            if (len(generated.questions) != count
-                    or {q.category for q in generated.questions} != set(selected)
-                    or len({q.question.strip() for q in generated.questions}) != count
-                    or any(not q.expectedConditions or any(c.id is not None for c in q.expectedConditions)
-                           for q in generated.questions)):
-                raise ValueError('Invalid batch')
-            return generated
+            return validate_generated_questions(generated, count, selected)
         except runtime.BedrockError as exc:
-            code = 'INVALID_GENERATION_OUTPUT' if exc.code == 'INVALID_OUTPUT' else 'GENERATION_' + exc.code
+            code = 'GENERATION_SCHEMA_INVALID' if exc.code == 'INVALID_OUTPUT' else 'GENERATION_' + exc.code
             status = 400 if exc.code == 'INPUT_TOO_LARGE' else 504 if exc.code == 'TIMEOUT' else (
                 502 if exc.code in ('INCOMPLETE', 'REFUSED', 'INVALID_OUTPUT', 'RESPONSE_TOO_LARGE') else 503)
             raise ApiError(status, code, MESSAGES[exc.code]) from None
         except (ValueError, TypeError, KeyError, AttributeError):
-            raise ApiError(502, 'INVALID_GENERATION_OUTPUT', MESSAGES['INVALID_OUTPUT']) from None
+            raise ApiError(502, 'GENERATION_SCHEMA_INVALID', MESSAGES['INVALID_OUTPUT']) from None
 
 
 class BedrockEvaluationJudge:
@@ -71,7 +66,7 @@ class BedrockEvaluationJudge:
         payload = {**kwargs, 'policies': [{key: value for key, value in policy.items() if key != 'content'}
                                         for policy in kwargs['policies']]}
         try:
-            output = await asyncio.to_thread(runtime.converse_json, model=self.model, region=self.region,
+            output = await runtime.converse_json_async(model=self.model, region=self.region,
                 instructions=JUDGE_INSTRUCTIONS, payload=payload,
                 schema=judgment_schema(kwargs['criteria']['version']), name='submit_evaluation',
                 max_tokens=min(24000, 2000 + len(kwargs['question'].get('expectedConditions', [])) * 750),
