@@ -307,6 +307,10 @@ class TestSetDetail(BaseModel):
     version: TestSetVersionOut
 
 
+class EvaluationPolicyVersion(PolicyVersionOut):
+    policyTitle: str | None = None
+
+
 class EvaluationSnapshot(BaseModel):
     schemaVersion: int
     projectId: str
@@ -315,5 +319,5 @@ class EvaluationSnapshot(BaseModel):
     version: int
     confirmedBy: str
     confirmedAt: str
-    policies: list[PolicyVersionOut]
+    policies: list[EvaluationPolicyVersion]
     questions: list[QuestionOut]

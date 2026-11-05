@@ -28,7 +28,7 @@ class EvaluationJudge(Protocol):
         """Return non-secret adapter/model identity persisted at submission."""
         ...
 
-    async def judge(self, *, question: dict, answer: str, evidence: dict, policies: list, criteria: dict, evidence_catalog: list) -> Judgement | ConditionJudgement | dict:
+    async def judge(self, *, question: dict, answer: str, evidence: dict, policies: list, criteria: dict, evidence_catalog: list, prompt_context: dict | None = None) -> Judgement | ConditionJudgement | dict:
         """Judge one response using frozen inputs; never include credentials in output or logs."""
         ...
 

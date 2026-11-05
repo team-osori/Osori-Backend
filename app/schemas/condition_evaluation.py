@@ -3,7 +3,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from app.schemas.evaluation import CriterionResult, EvidenceReference
+from app.schemas.evaluation import CauseHypothesis, CriterionResult, IssueKind
 from app.schemas.policy import Id
 
 AnalysisCriterion = Literal['policy', 'questionResolution', 'communicationQuality', 'retrieval', 'grounding']
@@ -20,17 +20,6 @@ class ExpectedCondition(BaseModel):
     kind: Literal['required', 'forbidden'] = 'required'
     category: Literal['policy', 'response', 'retrieval', 'grounding', 'communicationQuality'] = 'policy'
     ruleKeys: Annotated[list[Id], Field(max_length=100)] = []
-
-
-IssueKind = Literal['condition_omitted', 'policy_contradiction', 'unsupported_claim',
-                    'incomplete_guidance', 'non_answer', 'unclear_answer', 'other']
-
-
-class CauseHypothesis(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    area: Literal['RETRIEVAL', 'PROMPT', 'MODEL']
-    reason: RequiredText
-    evidenceRefs: Annotated[list[EvidenceReference], Field(min_length=1, max_length=20)]
 
 
 class IssueDetail(BaseModel):

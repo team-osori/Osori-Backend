@@ -23,6 +23,13 @@ policy 요약은 policy 분류 조건에 미통과가 하나라도 있으면 fai
 나머지는 판단 불가다. 기타 품질 항목은 질문과 기대 행동 및 채점 기준에 따라 판단한다.
 검색·프롬프트·모델의 내부 원인을 단정하지 않는다. 확보한 근거로 추정할 때만 issue.hypothesis를
 제안하고 evidenceRefs에 실제 수집된 evidence_id를 참조한다. 그 외 hypothesis는 null이다.
+PROMPT 가설의 promptQuote는 prompt_context.content에서 문제 된 문장을 공백·문장부호까지 그대로
+인용한다. 원문에 없는 문장을 만들거나 요약하지 않는다. 문제 된 문장을 특정할 수 없거나
+prompt_context.available=false이거나 PROMPT 이외 가설이면 promptQuote는 null이다.
+hypothesis.reasonMarks에는 reason에서 표시할 정확한 부분 문자열 text와 kind를 반환한다.
+정책은 kind=policy, 검색 문서는 kind=retrieval이며 evidenceRef에 같은 종류의 evidence_catalog ID를
+참조한다. 프롬프트 지시는 PROMPT 가설에서 kind=prompt, evidenceRef=null로 표시한다.
+표시할 구간을 특정할 수 없으면 reasonMarks=[]로 반환한다. 표시 단어와 원문 인용은 서로 달라도 된다.
 criteria.version=1이면 기존 retrieval/grounding/response/policy 네 결과 형식을 사용한다.
 판정 이유는 자료에 근거한 짧은 설명으로 작성한다. 내부 사고 과정이나 불필요한 원문 반복은 출력하지 않는다.'''
 

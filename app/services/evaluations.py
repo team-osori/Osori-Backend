@@ -6,7 +6,7 @@ from app.core.errors import ApiError
 from app.models.connection import Connection
 from app.models.evaluation import Evaluation, EvaluationItem
 from app.services.evaluation_judge import CRITERIA
-from app.services.policy import get_evaluation_snapshot, iso
+from app.services.policy import freeze_policy_titles, get_evaluation_snapshot, iso
 from app.services.prompts import get_version, select_ab_versions
 from app.services import condition_evaluation
 
@@ -57,7 +57,9 @@ def build_inputs(db, service, body, judge):
             raise ApiError(409, 'COMPARISON_INPUT_MISMATCH', '동일한 질문·기준 스냅샷이 필요합니다.')
         if source.inputs['connection']['config'] != connection.config or source.inputs['judge'] != judge.descriptor():
             raise ApiError(409, 'COMPARISON_CONFIGURATION_CHANGED', '연동 설정 또는 판정 모델이 변경되었습니다. 새 평가를 시작하세요.')
-    testset = deepcopy(source.inputs['testSet']) if source else get_evaluation_snapshot(db, service.project_id, body.testSetVersionId)
+    testset = deepcopy(source.inputs['testSet'] if source else get_evaluation_snapshot(db, service.project_id, body.testSetVersionId))
+    if not source:
+        testset['policies'] = freeze_policy_titles(db, service.project_id, testset['policies'])
     if not 1 <= len(testset['questions']) <= 200:
         raise ApiError(409, 'INVALID_TESTSET', '평가 가능한 확정 문항이 필요합니다.')
     criteria = CRITERIA

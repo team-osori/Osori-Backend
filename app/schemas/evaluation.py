@@ -18,6 +18,8 @@ class RetrievalDocument(BaseModel):
     text: Annotated[str, StringConstraints(min_length=1, max_length=10000)]
     title: Annotated[str | None, Field(max_length=500)] = None
     source: Annotated[str | None, Field(max_length=2048)] = None
+    chunkIndex: Annotated[int | None, Field(strict=True, ge=0)] = Field(default=None,
+        description='기업 API가 반환한 청크 번호. 0/1 기반 번호를 변환하지 않으며, 미제공 시 null.')
 
 
 class Citation(BaseModel):
@@ -62,6 +64,80 @@ class EvidenceSource(BaseModel):
     evidence_id: str
     kind: Literal['answer', 'policy', 'retrieval']
     source_id: str | None
+
+
+class ReasonMark(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    text: Annotated[str, StringConstraints(min_length=1, max_length=2000, pattern=r'\S')] = Field(
+        description='hypothesis.reason에 공백·문장부호까지 그대로 포함되는 표시 문자열.')
+    kind: Literal['policy', 'retrieval', 'prompt']
+    evidenceRef: Annotated[str | None, StringConstraints(min_length=1, max_length=100)] = Field(default=None,
+        description='policy/retrieval은 같은 side의 evidenceCatalog ID가 필수. prompt는 null.')
+
+
+class CauseHypothesis(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    area: CauseArea
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
+    evidenceRefs: Annotated[list[EvidenceReference], Field(min_length=1, max_length=20)]
+    promptQuote: Annotated[str | None, StringConstraints(min_length=1, max_length=10000, pattern=r'\S')] = Field(
+        default=None, description='PROMPT 가설의 평가 당시 promptContext.content 원문 인용. 원문 미확인 시 null.')
+    reasonMarks: Annotated[list[ReasonMark], Field(max_length=20)] = []
+
+
+IssueKind = Literal['condition_omitted', 'policy_contradiction', 'unsupported_claim',
+                    'incomplete_guidance', 'non_answer', 'unclear_answer', 'other']
+
+
+class AnalysisIssueDetail(BaseModel):
+    kind: IssueKind
+    answerQuote: str | None = None
+    missingGuidance: list[str] = []
+    recommendation: str | None = None
+    hypothesis: CauseHypothesis | None = None
+
+
+class ConditionJudgmentOutput(BaseModel):
+    """Includes human review overrides, which need not contain automatic evidence refs."""
+    question_id: str
+    conditionId: str
+    status: Literal['judged', 'not_evaluable', 'error']
+    verdict: Literal['pass', 'fail'] | None
+    reason: str
+    evidence_refs: list[EvidenceReference]
+    error: ExecutionError | None = None
+    issue: AnalysisIssueDetail | None = None
+    humanReview: dict | None = None
+
+
+class PolicyEvidence(BaseModel):
+    policyVersionId: str
+    quote: str
+    policyTitle: str | None = None
+    fileName: str | None = None
+    chunkIndex: int | None = Field(default=None,
+        description='원문 인용이 하나의 청크로 특정될 때의 1 기반 번호. 미제공·다중 청크·모호한 위치는 null.')
+
+
+class AnalysisCondition(BaseModel):
+    conditionId: str
+    criterion: Literal['policy', 'questionResolution', 'communicationQuality', 'retrieval', 'grounding']
+    kind: Literal['required', 'forbidden']
+    category: Literal['policy', 'response', 'retrieval', 'grounding', 'communicationQuality']
+    ruleKeys: list[str]
+    requirement: str
+    policyEvidence: PolicyEvidence
+    judgment: ConditionJudgmentOutput | None
+    automaticJudgment: ConditionJudgmentOutput | None
+
+
+class AnalysisIssue(AnalysisCondition):
+    kind: IssueKind
+    reason: str
+    answerQuote: str | None = None
+    missingGuidance: list[str] = []
+    recommendation: str | None = None
+    hypothesis: CauseHypothesis | None = None
 
 
 class CriterionResult(BaseModel):
@@ -204,7 +280,7 @@ class EvaluationSide(BaseModel):
     error: ExecutionError | None
     judgeError: ExecutionError | None
     criteria: ConditionCriteriaOutput | Judgement
-    conditionResults: list[dict] = []
+    conditionResults: list[ConditionJudgmentOutput] = []
 
 
 class PromptContext(BaseModel):
@@ -219,11 +295,8 @@ class PromptContext(BaseModel):
     applicationVerified: bool
 
 
-class AnalysisHypothesis(BaseModel):
+class AnalysisHypothesis(CauseHypothesis):
     conditionId: str
-    area: CauseArea
-    reason: str
-    evidenceRefs: list[EvidenceReference]
 
 
 class ItemAnalysis(BaseModel):
@@ -233,8 +306,8 @@ class ItemAnalysis(BaseModel):
     needsReview: bool
     hasJudgmentError: bool
     hasUnevaluableCriteria: bool
-    conditions: list[dict]
-    issues: list[dict]
+    conditions: list[AnalysisCondition]
+    issues: list[AnalysisIssue]
     humanReviewApplied: bool
     causeStatus: Literal['HYPOTHESIS', 'UNDETERMINED']
     confirmedCause: None

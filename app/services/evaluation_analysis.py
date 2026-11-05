@@ -4,7 +4,7 @@ from copy import deepcopy
 
 from app.services.evaluations import side_names
 from app.services.condition_evaluation import normalize_condition
-from app.services.json_pointer import read_pointer
+from app.services.evaluation_sources import policy_evidence, prompt_context
 
 SCREEN_COUNTS = {'CORRECT': 'correct', 'INCORRECT': 'incorrect', 'PENDING': 'pending',
                  'REMAINING': 'remaining', 'EXECUTION_ERROR': 'executionError',
@@ -130,6 +130,10 @@ def item_analysis(run, item, reviews=None, answer_reviews=None):
         detail = reviewed_side(item.input, getattr(item, name),
             [value for (item_id, side, condition_id), value in reviews.items() if item_id == item.id and side == name],
             overall, expected_criteria=run.inputs.get('criteria', {}).get('definitions'))
+        policies = {policy['id']: policy for policy in run.inputs.get('testSet', {}).get('policies', [])}
+        for condition in detail['conditions']:
+            source = condition['policyEvidence']
+            source.update(policy_evidence(policies.get(source['policyVersionId'], {}), source['quote']))
         causes = cause_analysis(run.inputs, item.input, name, getattr(item, name))
         failed = {condition['conditionId'] for condition in detail['conditions']
                   if condition['judgment'] and condition['judgment']['verdict'] == 'fail'}
@@ -147,34 +151,11 @@ def item_analysis(run, item, reviews=None, answer_reviews=None):
     return result
 
 
-def prompt_context(inputs, name):
-    """Expose only a known frozen prompt location; never guess company internals."""
-    prompt = inputs.get('prompts', {}).get(name)
-    context = {'source': 'UNAVAILABLE', 'available': False, 'promptVersionId': None,
-               'promptId': None, 'version': None, 'content': None, 'pointer': None,
-               'connectionRevision': inputs.get('connection', {}).get('revision'),
-               'applicationVerified': inputs.get('comparisonAssurance', {}).get('promptAppliedVerified', False)}
-    if prompt:
-        return {**context, 'source': 'SELECTED_VERSION', 'available': True,
-                'promptVersionId': prompt['id'], 'promptId': prompt.get('promptId'),
-                'version': prompt.get('version'), 'content': prompt['content']}
-    config = inputs.get('connection', {}).get('config', {})
-    pointer = config.get('promptPointer')
-    if inputs.get('useConfiguredPrompt') and config.get('executionMode') == 'PROMPT_BODY' and pointer:
-        try:
-            content = read_pointer(config.get('requestTemplate', {}), pointer)
-        except ValueError:
-            return context
-        if isinstance(content, str):
-            return {**context, 'source': 'CONFIGURED_TEMPLATE', 'available': True,
-                    'content': content, 'pointer': pointer}
-    return context
-
-
 def cause_analysis(inputs, question, name, side):
     """Keep observable input/output facts separate from unproven causal attribution."""
     documents = (side or {}).get('evidence', {}).get('documents')
     prompt = inputs.get('prompts', {}).get(name)
+    context = prompt_context(inputs, name)
     facts = {'retrievalTelemetryAvailable': documents is not None,
              'retrievedDocumentCount': len(documents) if documents is not None else None,
              'selectedPromptVersionId': prompt['id'] if prompt else None,
@@ -190,7 +171,7 @@ def cause_analysis(inputs, question, name, side):
         limitations.append('RETRIEVAL_TELEMETRY_UNAVAILABLE')
     else:
         limitations.append('EXACT_QUOTE_MATCH_IS_NOT_SEMANTIC_RETRIEVAL_EVALUATION')
-    if not prompt:
+    if not context['available']:
         limitations.append('PROMPT_INTERNALS_UNAVAILABLE')
     elif not facts['promptApplicationVerified']:
         limitations.append('PROMPT_APPLICATION_UNVERIFIED')
@@ -201,7 +182,7 @@ def cause_analysis(inputs, question, name, side):
             continue
         if hypothesis['area'] == 'RETRIEVAL' and documents is None:
             continue
-        if hypothesis['area'] == 'PROMPT' and not prompt:
+        if hypothesis['area'] == 'PROMPT' and not context['available']:
             continue
         hypotheses.append({'conditionId': decision['conditionId'], **hypothesis})
     return {'causeStatus': 'HYPOTHESIS' if hypotheses else 'UNDETERMINED',

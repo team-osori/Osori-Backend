@@ -21,6 +21,7 @@ from app.services.auth import now
 from app.services.chatbot_gateway import execute_chatbot
 from app.services.evaluation_judge import get_evaluation_judge, JudgeError
 from app.services.evaluations import CRITERION_KEYS, side_names
+from app.services.evaluation_sources import prompt_context
 from app.services.policy import uid
 from app.services import condition_evaluation
 
@@ -120,18 +121,20 @@ def evidence_catalog(inputs, answer, evidence):
     return [{'evidence_id': f'ev_{index:03d}', **source} for index, source in enumerate(sources, 1)]
 
 
-async def judge_response(judge, inputs, question, answer, evidence):
+async def judge_response(judge, inputs, question, answer, evidence, *, side='a'):
     """Validate question identity, result states and references to the server-owned catalog."""
     error = None
     catalog = evidence_catalog(inputs, answer, evidence)
     allowed = {source['evidence_id'] for source in catalog}
+    context = prompt_context(inputs, side)
+    options = {'prompt_context': deepcopy(context)} if inputs['criteria']['version'] == 2 else {}
     try:
         async with asyncio.timeout(getattr(judge, 'timeout_seconds', JUDGE_TIMEOUT_SECONDS)):
             output = await judge.judge(question=deepcopy(question), answer=answer, evidence=deepcopy(evidence),
                 policies=deepcopy(inputs['testSet']['policies']), criteria=deepcopy(inputs['criteria']),
-                evidence_catalog=deepcopy(catalog))
+                evidence_catalog=deepcopy(catalog), **options)
         if inputs['criteria']['version'] == 2:
-            output = condition_evaluation.validate_judgement(output, question, catalog)
+            output = condition_evaluation.validate_judgement(output, question, catalog, context)
         else:
             output = Judgement.model_validate(output).model_dump()
             for result in output.values():
@@ -174,7 +177,7 @@ async def execute_side(inputs, question, side, secret, judge, sender):
             failed.update(latencyMs=result.latency_ms, attemptCount=result.attempt_count)
             return failed
         evidence = Evidence.model_validate(result.evidence or {}).model_dump()
-        criteria, judge_error = await judge_response(judge, inputs, question, result.answer, evidence)
+        criteria, judge_error = await judge_response(judge, inputs, question, result.answer, evidence, side=side)
         conditions = criteria.pop('conditionResults', [])
         return {'callStatus': 'SUCCEEDED', 'answer': result.answer, 'evidence': evidence, 'conditionResults': conditions,
                 'evidenceCatalog': [{k: v for k, v in source.items() if k != 'text'}

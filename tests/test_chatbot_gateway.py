@@ -165,6 +165,10 @@ def test_header_auth_and_connection_only():
 @pytest.mark.parametrize('documents,citations,code', [
     ([{'id': 'policy-v1', 'title': '취소 정책', 'text': '24시간 전까지 취소 가능', 'source': 'policy/refund/v1'}],
      [{'documentId': 'policy-v1', 'quote': '24시간 전까지'}], None),
+    ([{'id': 'policy-v1', 'title': '취소 정책', 'text': '24시간 전까지 취소 가능',
+       'source': 'policy/refund/v1', 'chunkIndex': 7}], [], None),
+    ([{'id': 'policy-v1', 'title': '취소 정책', 'text': '24시간 전까지 취소 가능',
+       'source': 'policy/refund/v1', 'chunkIndex': 0}], [], None),
     ([], [], None),
     (None, None, None),
     ([{'id': 'policy-v1', 'text': 'original'}], [{'documentId': 'policy-v1', 'quote': 'invented'}], 'INVALID_UPSTREAM_RESPONSE'),
@@ -214,7 +218,8 @@ def test_retrieval_json_transport(monkeypatch, documents, citations, code):
         assert result.answer is None
     else:
         assert result.answer == '답변' and result.error is None
-        assert result.evidence['documents'] == documents
+        assert result.evidence['documents'] == ([{'chunkIndex': None, **doc} for doc in documents]
+                                                if documents is not None else None)
         assert result.evidence['citations'] == citations
 
 
