@@ -15,7 +15,7 @@ def describe_side(question, side):
     elif side['callStatus'] != 'SUCCEEDED':
         status = 'EXECUTION_ERROR'
     else:
-        results = list(side['criteria'].values())
+        results = list(side['criteria'].values()) + side.get('conditionResults', [])
         if any(result['verdict'] == 'fail' for result in results):
             status = 'UNMET'
         elif any(result['status'] == 'error' for result in results):
@@ -38,8 +38,9 @@ def describe_side(question, side):
         conditions.append(record)
         if decision and decision['verdict'] == 'fail' and decision.get('issue'):
             issues.append({**record, **decision['issue'], 'reason': decision['reason']})
-    errors = [result for result in (side or {}).get('criteria', {}).values() if result['status'] == 'error']
-    unavailable = [result for result in (side or {}).get('criteria', {}).values() if result['status'] == 'not_evaluable']
+    results = list((side or {}).get('criteria', {}).values()) + (side or {}).get('conditionResults', [])
+    errors = [result for result in results if result['status'] == 'error']
+    unavailable = [result for result in results if result['status'] == 'not_evaluable']
     return {'status': status, 'needsReview': status not in ('MET', 'NOT_RUN', 'IN_PROGRESS') or bool(errors or unavailable),
             'hasJudgmentError': bool(errors), 'hasUnevaluableCriteria': bool(unavailable),
             'conditions': conditions, 'issues': issues}
