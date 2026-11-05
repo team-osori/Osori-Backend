@@ -172,7 +172,7 @@ v2의 retrieval/grounding은 조건의 진단 분류일 수 있지만 네 번째
 마이그레이션 `20261105_2829`는 `evaluation_answer_reviews`만 추가한다.
 기존 평가·조건 검토·시험지·프롬프트 데이터를 수정하지 않으며 revision 충돌은
 기존 evaluation_items.review_revision의 원자적 비교/증가로 막는다.
-현재 down_revision은 `20261105_11`이며 PR 제출 직전 최신 main과 연결을 다시 확인한다.
+PR 제출 전 최신 main(05ba5b3)에 재배치했으며 down_revision은 `20261105_25`다.
 다른 작업에서 마이그레이션이 먼저 병합되면 미배포 상태에서 연결 관계를 조정해야 한다.
 
 회귀 검증: 상태 혼합·분모/0점·조건 누락·취소/재개·A/B 분리·원인 영역 중복·필터/페이지·
