@@ -233,3 +233,12 @@ def test_credential_echo_is_removed_from_retrieval_evidence():
     result = asyncio.run(gateway.execute_chatbot(CONFIG, 'Q', 'P', 'secret', sender=sender))
     assert 'secret' not in str(result)
     assert result.evidence['documents'][0]['text'] == 'source [REDACTED]'
+
+
+def test_retrieval_documents_ignore_unknown_metadata():
+    """팀 RAG /query의 chunks(id · text · score · source · page)를 그대로 근거 문서로 받는다."""
+    from app.schemas.evaluation import Evidence
+    evidence = Evidence.model_validate({'documents': [
+        {'id': 'policy.pdf-p1-c0', 'text': '학생운임은 소급 적용하지 않는다.', 'score': 0.82, 'source': 'policy.pdf', 'page': 1}]})
+    assert evidence.model_dump()['documents'][0] == {
+        'id': 'policy.pdf-p1-c0', 'text': '학생운임은 소급 적용하지 않는다.', 'title': None, 'source': 'policy.pdf', 'chunkIndex': None}
