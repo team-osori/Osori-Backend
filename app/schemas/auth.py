@@ -27,6 +27,8 @@ class SignupRequest(BaseModel):
     email: Email
     name: Annotated[str, Field(min_length=1, max_length=30)]
     password: Password
+    verificationId: Annotated[str, Field(min_length=36, max_length=36)]
+    verificationCode: Annotated[str, Field(pattern=r'^[0-9]{6}$')]
 
     @field_validator('name', mode='before')
     @classmethod
@@ -62,6 +64,14 @@ class LegacyEmailLink(BaseModel):
     model_config = ConfigDict(extra='forbid')
     loginId: Annotated[str, Field(min_length=4, max_length=30, pattern=r'^[A-Za-z][A-Za-z0-9_]*$'), AfterValidator(str.lower)]
     password: Password
+    email: Email
+    verificationId: Annotated[str, Field(min_length=36, max_length=36)]
+    verificationCode: Annotated[str, Field(pattern=r'^[0-9]{6}$')]
+
+
+class VerificationRequest(BaseModel):
+    """Request proof of control of a normalized email address."""
+    model_config = ConfigDict(extra='forbid')
     email: Email
 
 

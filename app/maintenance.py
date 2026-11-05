@@ -2,7 +2,7 @@
 from sqlalchemy import delete, or_
 
 from app.core.database import SessionLocal
-from app.models.auth import AuthSession
+from app.models.auth import AuthSession, EmailVerification
 from app.models.rate_limit import AuthRateWindow
 from app.models.policy import GenerationRequest
 from app.services.auth import now
@@ -13,6 +13,7 @@ def cleanup_expired(db):
     current = now()
     sessions = db.execute(delete(AuthSession).where(or_(AuthSession.refresh_expires_at <= current, AuthSession.absolute_expires_at <= current))).rowcount
     counters = db.execute(delete(AuthRateWindow).where(AuthRateWindow.window_start < int(current.timestamp()) - 86400)).rowcount
+    db.execute(delete(EmailVerification).where(EmailVerification.expires_at <= current))
     generations = db.execute(delete(GenerationRequest).where(GenerationRequest.expires_at <= current)).rowcount
     from app.services.project_lifecycle import purge_expired_projects
     projects = purge_expired_projects(db)

@@ -19,9 +19,10 @@ MySQL 데이터베이스는 미리 생성해야 합니다. 비밀번호의 특�
 
 | Method | 경로 | 입력과 동작 |
 | --- | --- | --- |
-| POST | `/api/auth/signup` | `email`, `name`, `password`로 가입. 201 |
+| POST | `/api/auth/email-verifications` | `email`로 인증 코드를 발송하고 `verificationId` 반환. 202 |
+| POST | `/api/auth/signup` | `email`, `name`, `password`, `verificationId`, `verificationCode`로 가입. 201 |
 | GET | `/api/auth/email-availability?email=...` | 이메일 사용 가능 여부 |
-| POST | `/api/auth/legacy-email-link` | 기존 `loginId`, `password`와 새 `email`을 받아 계정에 이메일 연결 |
+| POST | `/api/auth/legacy-email-link` | 기존 `loginId`, `password`와 새 `email`, `verificationId`, `verificationCode`로 계정 연결 |
 | POST | `/api/auth/login` | `email`, `password`. `user`, `accessToken`, `refreshToken` 반환 |
 | GET | `/api/auth/me` | Bearer 액세스 토큰으로 내 정보 조회 |
 | POST | `/api/auth/refresh` | `refreshToken`으로 새 토큰 쌍 발급 |
@@ -175,4 +176,8 @@ OSORI_TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/osori_test?ch
 
 ## 이메일 전환
 
-신규 가입과 로그인은 이메일만 사용합니다. 기존 login_id와 프로젝트는 보존하고 기존 계정의 이메일은 null로 둡니다. 기존 사용자는 기존 loginId와 비밀번호, 새 이메일로 `legacy-email-link`를 호출한 후 이메일 로그인할 수 있습니다. 계정 ID와 프로젝트·멤버십은 유지됩니다. 이메일은 최초 한 번만 연결하고 중복 주소는 거부합니다. 이메일 소유권 확인은 제공하지 않습니다. 따라서 다른 사람의 이메일로 가입하거나 연결할 수 있고 이메일 기반 프로젝트 초대는 소유자를 보장하지 않습니다. 이메일이 저장된 DB는 이메일을 이전하기 전 마이그레이션을 내릴 수 없습니다.
+신규 가입과 기존 계정 연결은 먼저 `POST /api/auth/email-verifications`에 이메일을 보내고 응답의 `verificationId` 및 이메일로 받은 6자리 `verificationCode`를 가입 또는 연결 요청에 포함합니다. 코드는 10분간 유효하고 다섯 번 틀리면 사용할 수 없으며, 성공 시 한 번만 사용됩니다. 코드 사용과 계정 생성·연결은 같은 DB 트랜잭션으로 처리합니다. 로그인은 이메일과 비밀번호로 합니다.
+
+기존 계정의 ID와 프로젝트·멤버십은 보존하고 기존 이메일은 null로 둡니다. 기존 사용자는 기존 loginId와 비밀번호 및 확인된 새 이메일로 `legacy-email-link`를 호출한 후 로그인할 수 있습니다. 연결은 한 번만 가능하며 중복 주소는 거부합니다. 이메일이 저장된 DB는 이메일을 이전하기 전 마이그레이션을 내릴 수 없습니다.
+
+인증 메일은 SMTP STARTTLS로 발송합니다. `EMAIL_VERIFICATION_SECRET`은 모든 API 인스턴스에서 동일한 무작위 32바이트 이상 비밀값이어야 합니다. `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` 설정이 없거나 메일 발송에 실패하면 인증 요청은 503으로 실패합니다. IP 및 이메일별 발송 제한을 적용하고, 비밀값을 바꾸면 이전 미사용 코드는 무효화됩니다. 만료된 인증 기록은 `python -m app.maintenance`로 정리합니다. 프론트엔드에는 인증 코드 요청과 입력 단계가 필요합니다.

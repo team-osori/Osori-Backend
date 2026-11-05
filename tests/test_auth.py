@@ -1,3 +1,4 @@
+from email_helpers import verified_post
 from datetime import timedelta
 
 from sqlalchemy import select
@@ -11,11 +12,11 @@ def test_auth_lifecycle(db_and_client):
     sessions, client = db_and_client
     signup = {'email': 'osori_dev@example.com', 'name': '담당자', 'password': 'secure-password-123'}
     assert client.get('/api/auth/email-availability', params={'email': signup['email']}).json()['data']['available'] is True
-    created = client.post('/api/auth/signup', json=signup)
+    created = verified_post(client, '/api/auth/signup', json=signup)
     assert created.status_code == 201
     assert created.json()['data']['email'] == 'osori_dev@example.com'
     assert 'password' not in created.json()['data']
-    assert client.post('/api/auth/signup', json=signup).status_code == 409
+    assert verified_post(client, '/api/auth/signup', json=signup).status_code == 409
     assert client.get('/api/auth/email-availability', params={'email': signup['email']}).json()['data']['available'] is False
     with sessions() as db:
         user = db.scalar(select(User))
@@ -41,9 +42,9 @@ def test_auth_lifecycle(db_and_client):
 def test_errors_and_expiration(db_and_client):
     """Verify errors and expiration against the observable API or database contract."""
     sessions, client = db_and_client
-    assert client.post('/api/auth/signup', json={'email': 'x', 'name': 'a', 'password': 'short'}).status_code == 400
+    assert verified_post(client, '/api/auth/signup', json={'email': 'x', 'name': 'a', 'password': 'short'}).status_code == 400
     signup = {'email': 'tester@example.com', 'name': 'Test', 'password': 'secure-password-123'}
-    client.post('/api/auth/signup', json=signup)
+    verified_post(client, '/api/auth/signup', json=signup)
     wrong = client.post('/api/auth/login', json={'email': 'tester@example.com', 'password': 'wrong-password-123'})
     missing = client.post('/api/auth/login', json={'email': 'missing@example.com', 'password': 'wrong-password-123'})
     assert wrong.status_code == missing.status_code == 401
@@ -65,7 +66,7 @@ def test_sessions_are_independent_and_invalid_tokens_are_rejected(db_and_client)
     """Verify sessions are independent and invalid tokens are rejected against the observable API or database contract."""
     _, client = db_and_client
     signup = {'email': 'tester@example.com', 'name': 'Test', 'password': 'secure-password-123'}
-    assert client.post('/api/auth/signup', json=signup).status_code == 201
+    assert verified_post(client, '/api/auth/signup', json=signup).status_code == 201
     credentials = {'email': signup['email'], 'password': signup['password']}
     first = client.post('/api/auth/login', json=credentials).json()['data']
     second = client.post('/api/auth/login', json=credentials).json()['data']
@@ -82,13 +83,13 @@ def test_signup_common_rules_and_body_limits(db_and_client):
     """Verify signup common rules and body limits against the observable API or database contract."""
     _, client = db_and_client
     body = {'email': 'tester@example.com', 'name': '  담당자  ', 'password': ' secure-password-123 '}
-    response = client.post('/api/auth/signup', json=body)
+    response = verified_post(client, '/api/auth/signup', json=body)
     assert response.status_code == 201
     assert response.headers['location'] == '/api/auth/me'
     assert response.json()['data']['name'] == '담당자'
     assert client.post('/api/auth/login', json={'email': 'tester@example.com', 'password': body['password']}).status_code == 200
     assert client.post('/api/auth/login', json={'email': 'tester@example.com', 'password': body['password'].strip()}).status_code == 401
-    assert client.post('/api/auth/signup', json={**body, 'extra': True}).status_code == 400
+    assert verified_post(client, '/api/auth/signup', json={**body, 'extra': True}).status_code == 400
     assert client.post('/api/auth/login', content='{}', headers={'Content-Type': 'text/plain'}).status_code == 415
     assert client.post('/api/auth/login', content=b' ' * (1024 * 1024 + 1), headers={'Content-Type': 'application/json'}).status_code == 413
 
@@ -97,18 +98,18 @@ def test_email_is_normalized(db_and_client):
     """Verify email is normalized against the observable API or database contract."""
     _, client = db_and_client
     signup = {'email': 'Osori_DEV@example.com', 'name': 'Test', 'password': 'secure-password-123'}
-    response = client.post('/api/auth/signup', json=signup)
+    response = verified_post(client, '/api/auth/signup', json=signup)
     assert response.status_code == 201
     assert response.json()['data']['email'] == 'osori_dev@example.com'
     assert client.get('/api/auth/email-availability', params={'email': 'OSORI_dev@example.com'}).json()['data'] == {'email': 'osori_dev@example.com', 'available': False}
-    assert client.post('/api/auth/signup', json={**signup, 'email': 'osori_dev@example.com'}).status_code == 409
+    assert verified_post(client, '/api/auth/signup', json={**signup, 'email': 'osori_dev@example.com'}).status_code == 409
     assert client.post('/api/auth/login', json={'email': 'OSORI_DEV@example.com', 'password': signup['password']}).status_code == 200
 
 
 def test_error_details_and_request_id(db_and_client):
     """Verify error details and request id against the observable API or database contract."""
     _, client = db_and_client
-    response = client.post('/api/auth/signup', json={'email': 'tester@example.com', 'password': 'secure-password-123'})
+    response = verified_post(client, '/api/auth/signup', json={'email': 'tester@example.com', 'password': 'secure-password-123'})
     assert response.status_code == 400
     error = response.json()['error']
     assert error['requestId'] == response.headers['x-request-id']
@@ -145,7 +146,7 @@ def test_refresh_reuse_revokes_only_the_affected_session(db_and_client):
     """Verify refresh reuse revokes only the affected session against the observable API or database contract."""
     _, client = db_and_client
     signup = {'email': 'tester@example.com', 'name': 'Test', 'password': 'secure-password-123'}
-    client.post('/api/auth/signup', json=signup)
+    verified_post(client, '/api/auth/signup', json=signup)
     credentials = {'email': signup['email'], 'password': signup['password']}
     first = client.post('/api/auth/login', json=credentials).json()['data']
     other = client.post('/api/auth/login', json=credentials).json()['data']
@@ -162,7 +163,7 @@ def test_cleanup_expired_preserves_active_sessions(db_and_client):
     from app.models.auth import UsedRefreshToken
     sessions, client = db_and_client
     body = {'email': 'tester@example.com', 'password': 'secure-password-123'}
-    client.post('/api/auth/signup', json={**body, 'name': 'Test'})
+    verified_post(client, '/api/auth/signup', json={**body, 'name': 'Test'})
     expired = client.post('/api/auth/login', json=body).json()['data']
     rotated = client.post('/api/auth/refresh', json={'refreshToken': expired['refreshToken']}).json()['data']
     active = client.post('/api/auth/login', json=body).json()['data']
@@ -182,14 +183,14 @@ def test_signup_throttles_before_hashing_or_creating_user(db_and_client, monkeyp
     monkeypatch.setattr(auth_api, 'AUTH_SIGNUP_RATE_LIMIT', 1)
     sessions, client = db_and_client
     body = {'email': 'first_user@example.com', 'name': 'Test', 'password': 'secure-password-123'}
-    assert client.post('/api/auth/signup', json=body).status_code == 201
+    assert verified_post(client, '/api/auth/signup', json=body).status_code == 201
 
     def unexpected_hash(*args, **kwargs):
         """Fail if a throttled request reaches expensive password hashing."""
         raise AssertionError('Hashing must not run after the signup budget is exhausted')
 
     monkeypatch.setattr(auth.password_hash, 'hash', unexpected_hash)
-    response = client.post('/api/auth/signup', json={**body, 'email': 'second_user@example.com'})
+    response = verified_post(client, '/api/auth/signup', json={**body, 'email': 'second_user@example.com'})
     assert response.status_code == 429
     assert int(response.headers['retry-after']) > 0
     with sessions() as db:
@@ -207,7 +208,7 @@ def test_absolute_session_expiry_and_refresh_budget(db_and_client, monkeypatch):
     monkeypatch.setattr(auth, 'AUTH_SESSION_MAX_DAYS', 1)
     monkeypatch.setattr(auth, 'AUTH_SESSION_MAX_REFRESHES', 1)
     body = {'email': 'tester@example.com', 'name': 'Test', 'password': 'secure-password-123'}
-    client.post('/api/auth/signup', json=body)
+    verified_post(client, '/api/auth/signup', json=body)
     credentials = {'email': body['email'], 'password': body['password']}
     tokens = client.post('/api/auth/login', json=credentials).json()['data']
     rotated = client.post('/api/auth/refresh', json={'refreshToken': tokens['refreshToken']}).json()['data']
@@ -229,13 +230,13 @@ def test_email_validation_and_legacy_id_contract(db_and_client):
     _, client = db_and_client
     password = 'secure-password-123'
     for email in ('a..b@example.com', '.a@example.com', 'user@-example.com', 'user@example', 'u ser@example.com', '사용자@example.com'):
-        assert client.post('/api/auth/signup', json={'email': email, 'name': 'Test', 'password': password}).status_code == 400
-    assert client.post('/api/auth/signup', json={'loginId': 'legacy', 'name': 'Test', 'password': password}).status_code == 400
+        assert verified_post(client, '/api/auth/signup', json={'email': email, 'name': 'Test', 'password': password}).status_code == 400
+    assert verified_post(client, '/api/auth/signup', json={'loginId': 'legacy', 'name': 'Test', 'password': password}).status_code == 400
     assert client.post('/api/auth/login', json={'loginId': 'legacy', 'password': password}).status_code == 400
-    response = client.post('/api/auth/signup', json={'email': ' QA@Example.COM ', 'name': 'Test', 'password': password})
+    response = verified_post(client, '/api/auth/signup', json={'email': ' QA@Example.COM ', 'name': 'Test', 'password': password})
     assert response.status_code == 201
     assert response.json()['data']['email'] == 'qa@example.com'
-    duplicate = client.post('/api/auth/signup', json={'email': 'qa@example.com', 'name': 'Test', 'password': password})
+    duplicate = verified_post(client, '/api/auth/signup', json={'email': 'qa@example.com', 'name': 'Test', 'password': password})
     assert duplicate.status_code == 409 and duplicate.json()['error']['code'] == 'EMAIL_ALREADY_EXISTS'
     assert client.post('/api/auth/login', json={'email': 'QA@EXAMPLE.COM', 'password': password}).status_code == 200
 
@@ -252,14 +253,14 @@ def test_legacy_email_link_preserves_projects_and_checks_original_credentials(db
                        created_at=now(), updated_at=now()))
         db.commit()
     body = {'loginId': 'LEGACY_ID', 'password': 'secure-password-123', 'email': 'Legacy@Example.com'}
-    wrong = client.post('/api/auth/legacy-email-link', json={**body, 'password': 'wrong-password-123'})
+    wrong = verified_post(client, '/api/auth/legacy-email-link', json={**body, 'password': 'wrong-password-123'})
     assert wrong.status_code == 401
     with sessions() as db:
         assert db.get(User, 'legacy-user').email is None
-    linked = client.post('/api/auth/legacy-email-link', json=body)
+    linked = verified_post(client, '/api/auth/legacy-email-link', json=body)
     assert linked.status_code == 200 and linked.json()['data']['id'] == 'legacy-user'
     assert linked.json()['data']['email'] == 'legacy@example.com'
-    assert client.post('/api/auth/legacy-email-link', json=body).status_code == 401
+    assert verified_post(client, '/api/auth/legacy-email-link', json=body).status_code == 401
     login = client.post('/api/auth/login', json={'email': 'legacy@example.com', 'password': body['password']})
     assert login.status_code == 200
     headers = {'Authorization': 'Bearer ' + login.json()['data']['accessToken']}
@@ -271,12 +272,12 @@ def test_legacy_email_link_rejects_an_existing_email(db_and_client):
     from app.services.auth import password_hash
     sessions, client = db_and_client
     body = {'email': 'claimed@example.com', 'name': 'Existing', 'password': 'secure-password-123'}
-    assert client.post('/api/auth/signup', json=body).status_code == 201
+    assert verified_post(client, '/api/auth/signup', json=body).status_code == 201
     with sessions() as db:
         db.add(User(id='legacy', login_id='legacy_id', email=None, name='Legacy',
                     password_hash=password_hash.hash(body['password']), created_at=now()))
         db.commit()
-    response = client.post('/api/auth/legacy-email-link', json={'loginId': 'legacy_id',
+    response = verified_post(client, '/api/auth/legacy-email-link', json={'loginId': 'legacy_id',
         'password': body['password'], 'email': body['email']})
     assert response.status_code == 409 and response.json()['error']['code'] == 'EMAIL_ALREADY_EXISTS'
     with sessions() as db:

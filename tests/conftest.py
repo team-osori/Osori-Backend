@@ -38,3 +38,13 @@ def db_and_client():
     engine.dispose()
 
 
+
+
+@pytest.fixture(autouse=True)
+def email_delivery_stub(monkeypatch):
+    """Use the real verification flow without connecting to an SMTP service."""
+    from app.services import email_verification
+    from email_helpers import captured_codes
+    captured_codes.clear()
+    monkeypatch.setenv('EMAIL_VERIFICATION_SECRET', 'test-only-verification-secret-32-bytes')
+    monkeypatch.setattr(email_verification, 'send_code', lambda email, code: captured_codes.__setitem__(email, code))

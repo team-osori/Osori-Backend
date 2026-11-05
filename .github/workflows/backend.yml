@@ -63,6 +63,7 @@ jobs:
           OSORI_TEST_MYSQL_URL: mysql+pymysql://osori_test:ci-test-only@127.0.0.1:3306/osori_test?charset=utf8mb4
           AUTH_SIGNUP_RATE_LIMIT: '1000'
           AUTH_LOGIN_RATE_LIMIT: '1000'
+          AUTH_EMAIL_VERIFICATION_RATE_LIMIT: '1000'
         run: .venv/bin/python -m pytest -q --tb=short tests/test_mysql_auth_integration.py tests/test_mysql_connections_integration.py tests/test_mysql_evaluations_integration.py tests/test_mysql_cursors_integration.py tests/test_mysql_question_conditions_integration.py
       - name: Check migrated MySQL schema against models
         env:

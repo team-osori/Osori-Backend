@@ -13,6 +13,14 @@ def upgrade():
     email_type = sa.String(254).with_variant(sa.String(254, collation='utf8mb4_bin'), 'mysql')
     op.add_column('users', sa.Column('email', email_type, nullable=True))
     op.create_index('ix_users_email', 'users', ['email'], unique=True)
+    op.create_table('email_verifications',
+        sa.Column('id', sa.String(36), primary_key=True),
+        sa.Column('email', sa.String(254), nullable=False),
+        sa.Column('code_hash', sa.String(64), nullable=False),
+        sa.Column('attempts', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('consumed_at', sa.DateTime(timezone=True), nullable=True))
+    op.create_index('ix_email_verifications_expires_at', 'email_verifications', ['expires_at'])
 
 
 def downgrade():
@@ -20,5 +28,6 @@ def downgrade():
     # Existing email identities must not be silently discarded on rollback.
     if op.get_bind().execute(sa.text('SELECT COUNT(*) FROM users WHERE email IS NOT NULL')).scalar():
         raise RuntimeError('Cannot discard stored email identities; migrate them before downgrade')
+    op.drop_table('email_verifications')
     op.drop_index('ix_users_email', table_name='users')
     op.drop_column('users', 'email')

@@ -1,3 +1,4 @@
+from email_helpers import verified_post
 import base64
 import json
 
@@ -14,7 +15,7 @@ def cursor_endpoints(db_and_client):
     """Create both kinds of paginated resources under an authenticated project."""
     _, client = db_and_client
     credentials = {'email': 'cursor_owner@example.com', 'password': 'secure-password-123'}
-    client.post('/api/auth/signup', json={**credentials, 'name': 'Test'})
+    verified_post(client, '/api/auth/signup', json={**credentials, 'name': 'Test'})
     token = client.post('/api/auth/login', json=credentials).json()['data']['accessToken']
     headers = {'Authorization': 'Bearer ' + token}
     project = client.post('/api/projects', json={'name': 'Test'}, headers=headers).json()['data']['id']
