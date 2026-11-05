@@ -206,11 +206,55 @@ class EvaluationSide(BaseModel):
     conditionResults: list[dict] = []
 
 
+class PromptContext(BaseModel):
+    source: Literal['SELECTED_VERSION', 'CONFIGURED_TEMPLATE', 'UNAVAILABLE']
+    available: bool
+    promptVersionId: str | None
+    promptId: str | None
+    version: int | None
+    content: str | None
+    pointer: str | None
+    connectionRevision: int | None
+    applicationVerified: bool
+
+
+class AnalysisHypothesis(BaseModel):
+    conditionId: str
+    area: CauseArea
+    reason: str
+    evidenceRefs: list[EvidenceReference]
+
+
+class ItemAnalysis(BaseModel):
+    status: str
+    screenStatus: ScreenStatus
+    derivedScreenStatus: ScreenStatus
+    needsReview: bool
+    hasJudgmentError: bool
+    hasUnevaluableCriteria: bool
+    conditions: list[dict]
+    issues: list[dict]
+    humanReviewApplied: bool
+    causeStatus: Literal['HYPOTHESIS', 'UNDETERMINED']
+    confirmedCause: None
+    facts: dict
+    hypotheses: list[AnalysisHypothesis]
+    limitations: list[str]
+    activeHypotheses: list[AnalysisHypothesis]
+    activeHypothesisAreas: list[CauseArea]
+    analysisStatus: AnalysisStatus
+    hypothesesBasis: Literal['AUTOMATIC']
+    activeHypothesesBasis: Literal['LATEST_HUMAN_CONDITION_REVIEW_OVER_AUTOMATIC']
+    promptContext: PromptContext
+    answerReview: dict | None
+    reviewConflict: bool
+
+
 class EvaluationItemResponse(EvaluationItemSummary):
     input: dict
     a: EvaluationSide | None
     b: EvaluationSide | None
-    analysis: dict = {}
+    analysis: dict[str, ItemAnalysis] = {}
     reviewRevision: int = 0
     latestReviews: list[dict] = []
 
@@ -281,12 +325,41 @@ class ConditionCriteriaSummary(BaseModel):
     communicationQuality: CriterionSummary
 
 
+class ScreenCounts(BaseModel):
+    correct: int
+    incorrect: int
+    pending: int
+    remaining: int
+    executionError: int
+    judgmentError: int
+    reviewRequired: int
+    total: int
+
+
+class AnalysisVariantSummary(BaseModel):
+    statuses: dict[str, int]
+    needsReviewCount: int
+    issueTypes: dict[str, int]
+    screenCounts: ScreenCounts
+    causeQuestionCounts: dict[CauseArea, int]
+    analysisStatusCounts: dict[AnalysisStatus, int]
+
+
+class AnalysisSummary(BaseModel):
+    variants: dict[str, AnalysisVariantSummary]
+    issueCountsIncludeMultipleIssuesPerQuestion: bool
+    causeCountsIncludeMultipleAreasPerQuestion: bool
+    causeCountUnit: Literal['QUESTION']
+    basis: Literal['LATEST_HUMAN_CONDITION_REVIEW_OVER_AUTOMATIC']
+    criterionPassRatesBasis: Literal['AUTOMATIC']
+
+
 class EvaluationSummary(BaseModel):
     evaluation: EvaluationResponse
     criteria: ConditionCriteriaSummary | CriteriaSummary
     formula: str
     provisional: bool
-    analysis: dict = {}
+    analysis: AnalysisSummary
 
 
 class ConditionComparison(BaseModel):

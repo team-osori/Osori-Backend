@@ -81,7 +81,8 @@ def describe_side(question, side, reviews=()):
     results = list((side or {}).get('criteria', {}).values()) + (side or {}).get('conditionResults', [])
     errors = [result for result in results if result['status'] == 'error']
     unavailable = [result for result in results if result['status'] == 'not_evaluable']
-    return {'status': status, 'screenStatus': screen_status(question, side), 'needsReview': status not in ('MET', 'NOT_RUN', 'IN_PROGRESS') or bool(errors or unavailable),
+    screen = screen_status(question, side)
+    return {'status': status, 'screenStatus': screen, 'needsReview': screen in ('EXECUTION_ERROR', 'JUDGMENT_ERROR', 'REVIEW_REQUIRED', 'INCORRECT'),
             'hasJudgmentError': bool(errors), 'hasUnevaluableCriteria': bool(unavailable),
             'conditions': conditions, 'issues': issues, 'humanReviewApplied': bool(reviews)}
 
