@@ -3,6 +3,7 @@ from collections import Counter
 from copy import deepcopy
 
 from app.services.evaluations import side_names
+from app.services.condition_evaluation import normalize_condition
 
 STATUSES = ('MET', 'UNMET', 'REVIEW_REQUIRED', 'JUDGMENT_ERROR', 'EXECUTION_ERROR', 'NOT_RUN', 'IN_PROGRESS')
 
@@ -56,9 +57,11 @@ def describe_side(question, side, reviews=()):
     decisions = {result['conditionId']: result for result in (side or {}).get('conditionResults', [])}
     conditions = []
     issues = []
-    for condition in question.get('expectedConditions', []):
+    for source_condition in question.get('expectedConditions', []):
+        condition = normalize_condition(source_condition)
         decision = decisions.get(condition['id'])
         record = {'conditionId': condition['id'], 'criterion': condition['criterion'],
+                  'kind': condition['kind'], 'category': condition['category'], 'ruleKeys': condition['ruleKeys'],
                   'requirement': condition['requirement'],
                   'policyEvidence': {'policyVersionId': condition['policyVersionId'], 'quote': condition['sourceQuote']},
                   'judgment': decision,
@@ -92,7 +95,8 @@ def cause_analysis(inputs, question, name, side):
              'selectedPromptVersionId': prompt['id'] if prompt else None,
              'promptApplicationVerified': inputs.get('comparisonAssurance', {}).get('promptAppliedVerified', False),
              'conditionSources': []}
-    for condition in question.get('expectedConditions', []):
+    for source_condition in question.get('expectedConditions', []):
+        condition = normalize_condition(source_condition)
         matches = None if documents is None else [doc['id'] for doc in documents if condition['sourceQuote'] in doc['text']]
         facts['conditionSources'].append({'conditionId': condition['id'],
                                          'documentsContainingExactQuote': matches})
