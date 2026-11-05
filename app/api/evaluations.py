@@ -108,6 +108,8 @@ def list_items(evaluationId: ResourceId, service_row: OwnedService, db: Db,
     row = service.get_run(db, service_row.id, evaluationId)
     if change and criterion is None:
         raise ApiError(400, 'VALIDATION_ERROR', 'change 필터에는 criterion이 필요합니다.')
+    if change and row.inputs.get('mode') == 'SINGLE':
+        raise ApiError(400, 'COMPARISON_REQUIRED', '전후 비교는 comparison API를 사용하세요.')
     statement = select(EvaluationItem).where(EvaluationItem.evaluation_id == row.id)
     if change or resultStatus or issueKind:
         # Bounded to 200 items by confirmed test-set constraints; filter IDs before paging.
