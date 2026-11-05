@@ -120,12 +120,12 @@ def item_summary(row, inputs=None):
             (inputs['criteria']['definitions'] if inputs else CRITERION_KEYS)}}
 
 
-def aggregate(run, rows):
+def criterion_summary(inputs, rows):
     """Compute per-criterion rates with only PASS+FAIL in the denominator, never a total score."""
     results = {}
-    for key in run.inputs.get('criteria', CRITERIA)['definitions']:
+    for key in inputs.get('criteria', CRITERIA)['definitions']:
         entry = {}
-        for side_name in side_names(run.inputs):
+        for side_name in side_names(inputs):
             counts = {'pass': 0, 'fail': 0, 'notEvaluable': 0, 'judgeFailed': 0,
                       'callFailed': 0, 'callInterrupted': 0, 'inProgress': 0, 'notRun': 0}
             for row in rows:
@@ -145,7 +145,7 @@ def aggregate(run, rows):
             denominator = counts['pass'] + counts['fail']
             entry[side_name] = {**counts, 'denominator': denominator,
                 'passRate': round(counts['pass'] / denominator * 100, 2) if denominator else None}
-        if run.inputs.get('mode') == 'SINGLE':
+        if inputs.get('mode') == 'SINGLE':
             results[key] = {**entry, 'b': None, 'comparison': None}
             continue
         changes = {label: 0 for label in ('IMPROVED', 'WORSENED', 'UNCHANGED_PASS', 'UNCHANGED_FAIL', 'NOT_COMPARABLE')}
@@ -156,5 +156,9 @@ def aggregate(run, rows):
             'aPairedPassRate': round((changes['WORSENED'] + changes['UNCHANGED_PASS']) / paired * 100, 2) if paired else None,
             'bPairedPassRate': round((changes['IMPROVED'] + changes['UNCHANGED_PASS']) / paired * 100, 2) if paired else None}
         results[key] = entry
-    return {'evaluation': run_data(run), 'criteria': results,
+    return results
+
+
+def aggregate(run, rows):
+    return {'evaluation': run_data(run), 'criteria': criterion_summary(run.inputs, rows),
             'formula': 'PASS / (PASS + FAIL) * 100', 'provisional': run.status not in TERMINAL}

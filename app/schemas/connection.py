@@ -173,3 +173,4 @@ class ConnectionTestResponse(BaseModel):
     error: dict[str, str] | None
     createdAt: str
     finishedAt: str | None
+    isCurrentRevision: bool | None = None

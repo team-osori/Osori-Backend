@@ -26,7 +26,10 @@ def test_upgrade_from_deployed_a_preserves_question_history_and_evaluation(tmp_p
     subprocess.run([sys.executable, '-m', 'alembic', 'upgrade', 'head'], cwd=root, env=env, check=True)
     subprocess.run([sys.executable, '-m', 'alembic', 'check'], cwd=root, env=env, check=True)
     with engine.connect() as conn:
-        assert conn.execute(text('SELECT version_num FROM alembic_version')).scalar_one() == '20261105_11'
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+        head = ScriptDirectory.from_config(Config(str(root / 'alembic.ini'))).get_current_head()
+        assert conn.execute(text('SELECT version_num FROM alembic_version')).scalar_one() == head
         assert json.loads(conn.execute(text("SELECT after FROM question_history WHERE id='h'")).scalar_one())['conditionId'] == 'stable-condition'
         content, source = conn.execute(text("SELECT content,source_document FROM policy_versions WHERE id='pv'")).one()
         assert content == 'Existing policy' and source is None
