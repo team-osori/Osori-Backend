@@ -128,7 +128,7 @@ RUNNING·INTERRUPTED의 `attemptCount`, `latencyMs`는 미확정이므로 null�
 
 `EVALUATION_JUDGE_PROVIDER=bedrock`으로 서버 IAM 역할 기반 판정을 활성화합니다. 기본 모델은 Claude Haiku 4.5이며 API 키는 필요 없습니다. 이 문서는 기존 v1 네 기준을 설명하며 v2 조건별 판정은 [분석 인계](ANALYSIS_HANDOFF.md), 실제 모델·리전 설정은 [Bedrock 연동](BEDROCK_SETUP.md)을 참고하세요.
 
-`app/services/evaluation_judge.py`의 `get_evaluation_judge()`에 선택한 제공사 어댑터를 연결하세요. API 프로세스와 평가 워커에 같은 구현·설정을 배포합니다. `descriptor()`에는 어댑터 및 판정 프롬프트 버전·제공사·모델·생성 설정 등 결과에 영향을 주는 비밀이 아닌 식별 정보를 담고, `judge()`는 저장된 질문·정책·기준·답변·검색 근거를 사용해 아래 네 기준을 모두 반환해야 합니다.
+`app/services/evaluation_judge.py`의 `get_evaluation_judge()`가 명시된 제공사에 맞는 어댑터를 선택합니다. API 프로세스와 평가 워커에 같은 구현·설정을 배포합니다. `descriptor()`에는 어댑터 및 판정 프롬프트 버전·제공사·모델·생성 설정 등 결과에 영향을 주는 비밀이 아닌 식별 정보를 담고, `judge()`는 저장된 질문·정책·기준·답변·검색 근거를 사용해 아래 네 기준을 모두 반환해야 합니다.
 
 - retrieval: 질문에 필요한 정책 근거가 검색 문서에 있는가.
 - grounding: 답변이 검색 문서와 인용 근거에 충실한가.
@@ -165,7 +165,7 @@ RUNNING·INTERRUPTED의 `attemptCount`, `latencyMs`는 미확정이므로 null�
 
 Bedrock 판정은 워커 120초(연결 5초·응답 읽기 110초), 기존 OpenAI 어댑터는 워커 30초 제한을 적용합니다. 워커는 네 기준의 출력 구조·상태와 verdict 조합·요청한 question_id 일치·근거 ID 존재를 검사합니다. 잘못된 출력은 `INVALID_JUDGE_OUTPUT`입니다. 근거 설명의 의미적 정확성은 선택한 모델과 실제 사례로 검증해야 합니다. 어댑터는 정책·질문·기업 답변을 신뢰할 수 없는 평가 자료로 취급하고, 그 안의 지시가 평가 기준이나 시스템 지시를 덮어쓰지 않도록 작성해야 합니다.
 
-현재 기본 어댑터는 네 기준 모두 `status=not_evaluable`, `verdict=null`, `judgeError=JUDGE_NOT_CONFIGURED`를 반환합니다. 검색 정보가 미제공이면 모델이 연결되어도 retrieval·grounding은 `status=not_evaluable`, `verdict=null`입니다. `documents: []`는 자료가 없는 검색 결과 자체를 평가할 수 있습니다. 모델이 연결되기 전에 종료한 결과를 자동 재판정하지 않습니다. 모델 연결 후 새 실행을 제출하세요.
+제공사 설정이 없는 로컬의 비활성 어댑터는 네 기준 모두 `status=not_evaluable`, `verdict=null`, `judgeError=JUDGE_NOT_CONFIGURED`를 반환합니다. 검색 정보가 미제공이면 모델이 연결되어도 retrieval·grounding은 `status=not_evaluable`, `verdict=null`입니다. `documents: []`는 자료가 없는 검색 결과 자체를 평가할 수 있습니다. 모델이 연결되기 전에 종료한 결과를 자동 재판정하지 않습니다. 모델 연결 후 새 실행을 제출하세요.
 
 ## 통과율과 비교
 
@@ -214,3 +214,37 @@ CI에서 OpenAPI 구조와 실제 API 응답·필터 동작을 회귀 검사합�
 `POST …/evaluations/{evaluationId}/resume`에 `{"connectionRevision":N}`을 보내면 같은 평가에서 NOT_RUN인 측만 QUEUED로 재개합니다. 저장된 성공/실패나 INTERRUPTED 호출은 중복 실행하지 않습니다. 남은 미호출 항목이 없으면 `409 NO_PENDING_QUESTIONS`, 연동 revision·설정·판정 모델이 달라지면 `409 COMPARISON_CONFIGURATION_CHANGED`입니다. 재개한 마지막 항목까지 처리한 후 전체 결과에 따라 COMPLETED/PARTIAL_FAILED/FAILED로 끝납니다. 원문 스냅샷과 기존 사람 검토는 유지합니다.
 
 `GET …/evaluations/capabilities`는 각 분석 기능의 `supported/reason`을 반환합니다. 현재는 근거가 있을 때 원인 **가설**을 지원하며, 확정 원인 분류·프롬프트 수정안/diff·독립 채점자 일치도·반복 실행 불안정성·수정 효과 예측 개수는 미지원으로 명시합니다. 프론트는 미지원 영역을 숨기거나 사유를 표시하고 임의 숫자를 채우지 않습니다. 이는 프로젝트별 멤버 구현과 함께 합의한 현재 범위입니다.
+
+
+## 개발 서버 채점 활성화와 프론트 확인 (#18)
+
+#18 작성 당시의 미연결 상태는 #22에서 Bedrock으로 전환했습니다. 배포 파이프라인의
+`Sync Bedrock generation and judgment settings over restricted SSH` 단계가 매 배포마다
+`EVALUATION_JUDGE_PROVIDER=bedrock`과 모델·리전을 `/etc/osori-backend.env`에 설치합니다.
+API와 평가 워커가 이 파일을 함께 읽으며, 값이 바뀌면 둘 다 재시작합니다. 현재 기본값은
+Claude Haiku 4.5 (`global.anthropic.claude-haiku-4-5-20251001-v1:0`), `ap-northeast-3`입니다.
+이슈에 처음 적힌 OpenAI 설정으로 되돌리거나 개인 키를 추가할 필요가 없습니다.
+설정 변경은 [Bedrock 배포 문서](BEDROCK_SETUP.md)의 production Variables를 사용하세요.
+
+새 평가 응답과 `/inputs`의 `judge`에서 `provider=bedrock`, `adapter=bedrock-converse-tool-v1`,
+`model/region`을 확인할 수 있습니다. 과거 `adapter=unconfigured`로 종료한 결과는 그대로 보존됩니다.
+새 설정을 확인하려면 새 평가를 접수해야 하며, 과거 결과를 읽는 것만으로 다시 채점하지 않습니다.
+
+- 평가 1회는 확정 시험지 **최대 200문항**입니다. 초과하면 큐에 넣기 전에 `409 INVALID_TESTSET`입니다.
+- SINGLE은 최대 200회, COMPARE는 A/B 각각 실행하므로 최대 400회의 판정 요청입니다.
+  기업 챗봇 응답이 실패하면 해당 측의 판정 호출은 생략합니다. 질문 생성 호출은 별도입니다.
+- Bedrock 판정은 유료 요청을 자동 재시도하지 않습니다. 200문항은 금액 한도가 아니며
+  문서·답변 길이와 모델에 따라 비용이 달라집니다. 개발 확인은 1~3문항으로 시작하세요.
+- `criteria.<key>.verdict`는 `pass`/`fail`, 판정 불가·오류는 `null`입니다.
+  현재 v2 기준은 `policy`, `questionResolution`, `communicationQuality`입니다.
+- `summary.criteria.<key>.a.passRate`(비교 시 b도)는 **0~100 백분율**입니다.
+  `100`은 100%, `50`은 50%이며 판정 가능한 문항이 없으면 `null`입니다.
+- 항목의 `resultStatus`는 충족 `MET`, 하나라도 미충족 `UNMET`, 판정 불가 `REVIEW_REQUIRED`,
+  모델 오류 `JUDGMENT_ERROR`, 기업 호출 실패·중단 `EXECUTION_ERROR`로 구분합니다.
+  미충족이 오류·판정 불가와 함께 있으면 `UNMET`을 우선하며 검토 필요 플래그를 함께 확인하세요.
+  모델이 연결되어도 근거가 부족하면 `REVIEW_REQUIRED`가 정상적으로 나올 수 있습니다.
+
+`tests/test_judge_deployment_contract.py`는 배포 환경 설치 → 실제 어댑터 선택 → API 접수 → 워커 →
+프론트 응답의 pass/fail/판정 불가와 200문항 경계를 검증합니다. 기업 API와 Bedrock 전송은 대역으로
+교체하므로 실제 유료 호출은 없습니다. 이 검증은 실제 모델의 의미적 판정 품질이나 AWS 호출 권한
+실시간 검증을 대신하지 않습니다.
