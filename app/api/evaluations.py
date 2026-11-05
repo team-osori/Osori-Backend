@@ -188,5 +188,6 @@ def list_reviews(evaluationId: ResourceId, itemId: ResourceId, service_row: Owne
     if item is None:
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '평가 문항을 찾을 수 없습니다.')
     rows, next_cursor = paginate(db, select(EvaluationReview).where(EvaluationReview.item_id == itemId),
-        EvaluationReview, f'evaluationReviews:{itemId}', limit, cursor)
+        EvaluationReview, f'evaluationReviews:{itemId}:revision', limit, cursor,
+        versioned=True, sequence=EvaluationReview.revision)
     return {'data': {'items': [review_data(review) for review in rows], 'nextCursor': next_cursor}}
