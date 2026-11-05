@@ -226,3 +226,103 @@ def test_mysql_session_lifecycle_bounds(mysql_client, monkeypatch):
     monkeypatch.setattr(auth, 'now', lambda: instant)
     assert client.get('/api/auth/me', headers={'Authorization': 'Bearer ' + tokens['accessToken']}).status_code == 401
     assert client.post('/api/auth/refresh', json={'refreshToken': tokens['refreshToken']}).status_code == 401
+
+
+def mysql_policy_draft(client):
+    """Build a source-grounded draft for real MySQL transaction tests."""
+    tokens = signup_and_login(client)
+    headers = {'Authorization': 'Bearer ' + tokens['accessToken']}
+    project = client.post('/api/projects', json={'name': 'Policy test'}, headers=headers).json()['data']['id']
+    base = f'/api/projects/{project}'
+    body = {'name': '환불 정책', 'content': '취소는 하루 전까지 가능합니다.',
+        'rules': [{'key': 'refund', 'description': '취소 기한 안내', 'sourceQuote': '취소는 하루 전까지 가능합니다.'}]}
+    response = client.post(base + '/policies', json=body, headers=headers)
+    assert response.status_code == 201, response.text
+    source = response.json()['data']
+    created = client.post(base + '/testsets', json={'name': '검증', 'policyVersionIds': [source['version']['id']]}, headers=headers)
+    assert created.status_code == 201, created.text
+    question = {'question': '언제 취소할 수 있나요?', 'expectedBehavior': '하루 전까지라고 안내한다.',
+        'policyVersionId': source['version']['id'], 'ruleKeys': ['refund'], 'evidenceQuote': body['content']}
+    return headers, base, source, created.headers['location'], question
+
+
+def test_mysql_policy_review_conflicts_and_snapshot(mysql_client):
+    """Concurrent reviews serialize and a confirmed snapshot survives policy deletion."""
+    client, _, _, _ = mysql_client
+    headers, base, source, path, question = mysql_policy_draft(client)
+    added = client.post(path + '/questions', json={**question, 'expectedRevision': 1}, headers=headers)
+    assert added.status_code == 201, added.text
+    qpath = added.headers['location']
+    barrier = Barrier(2)
+
+    def review():
+        """Race two reviewers that read the same draft revision."""
+        barrier.wait(timeout=10)
+        return client.post(qpath + '/review', json={'expectedRevision': 2, 'status': 'approved'}, headers=headers)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(review) for _ in range(2)]
+        responses = [future.result(timeout=20) for future in futures]
+    assert sorted(r.status_code for r in responses) == [200, 409]
+    confirmed = client.post(path + '/confirm', json={'expectedRevision': 3}, headers=headers)
+    assert confirmed.status_code == 200, confirmed.text
+    snapshot = client.get(path + '/evaluation-snapshot', headers=headers).json()['data']
+    assert snapshot['questions'][0]['reviewStatus'] == 'approved'
+    assert client.delete(base + '/policies/' + source['policy']['id'], headers={**headers, 'If-Match': '"1"'}).status_code == 204
+    assert client.get(path + '/evaluation-snapshot', headers=headers).json()['data'] == snapshot
+
+
+def test_mysql_concurrent_generation_is_idempotent(mysql_client):
+    """Two concurrent requests with one key call the provider exactly once under MySQL isolation."""
+    from app.main import app
+    from app.services.question_generation import get_question_generator
+    client, _, _, _ = mysql_client
+    headers, _, _, path, question = mysql_policy_draft(client)
+    calls = []
+
+    class Provider:
+        """Fake only the external service; use real MySQL locking and persistence."""
+        def generate(self, **kwargs):
+            """Capture invocations without any real model credentials."""
+            calls.append(True)
+            return {'questions': [question]}
+
+    app.dependency_overrides[get_question_generator] = lambda: Provider()
+    barrier = Barrier(2)
+
+    def generate():
+        """Race duplicate client requests rather than serialize them in the test."""
+        barrier.wait(timeout=10)
+        return client.post(path + '/questions/generate', json={'expectedRevision': 1, 'count': 1},
+            headers={**headers, 'Idempotency-Key': 'same-key'})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(generate) for _ in range(2)]
+        responses = [future.result(timeout=20) for future in futures]
+    assert [r.status_code for r in responses] == [200, 200], [r.text for r in responses]
+    assert responses[0].json() == responses[1].json()
+    assert len(calls) == 1
+
+
+def test_mysql_policy_cursor_rejects_extreme_values(mysql_client):
+    """Reject malformed cursors before MySQL parameter conversion while keeping valid pages working."""
+    import base64
+    client, _, _, _ = mysql_client
+    headers, base, source, path, _ = mysql_policy_draft(client)
+    testset_id = path.split('/')[-3]
+    endpoints = [(base + '/policies/' + source['policy']['id'] + '/versions', 'policyVersions:' + source['policy']['id']),
+                 (base + '/testsets/' + testset_id + '/versions', 'testsetVersions:' + testset_id)]
+    for endpoint, scope in endpoints:
+        for value in (float('inf'), 2**31, 10**100, True, '1'):
+            payload = {'v': 1, 'scope': scope, 'id': source['version']['id'], 'value': value}
+            encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+            response = client.get(endpoint, params={'cursor': encoded}, headers=headers)
+            assert response.status_code == 400, response.text
+            assert response.json()['error']['code'] == 'INVALID_CURSOR'
+        assert client.get(endpoint, headers=headers).status_code == 200
+    for endpoint, scope in ((base + '/policies', 'policies:' + base.split('/')[-1]),
+                            (base + '/testsets', 'testsets:' + base.split('/')[-1])):
+        payload = {'v': 1, 'scope': scope, 'id': source['version']['id'], 'value': '0001-01-01T00:00:00'}
+        encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+        response = client.get(endpoint, params={'cursor': encoded}, headers=headers)
+        assert response.status_code == 400 and response.json()['error']['code'] == 'INVALID_CURSOR'

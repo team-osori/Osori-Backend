@@ -21,6 +21,8 @@ DB 변경은 Alembic 마이그레이션으로 적용합니다. 이전에 자동 
 
 프로젝트·챗봇 API, 공통 오류, 다른 담당자가 재사용할 소유권 검사와 토큰 처리 규칙은 [API 인계 문서](docs/API_HANDOFF.md)에 정리했습니다.
 
+정책 텍스트·규칙 버전과 사람이 검토·확정하는 테스트셋 기능은 [정책·테스트셋 인계](docs/POLICY_TESTSETS.md)를 참고하세요. AI 제공사는 아직 미연결이며 수동 문항 작성·검토·확정은 가능합니다.
+
 기업 챗봇 설정·인증정보 암호화·연결 테스트와 프롬프트 버전 관리는 [연동·프롬프트 인계 문서](docs/CONNECTION_PROMPT_HANDOFF.md)를 참고하세요. 연결 테스트에는 별도 `.venv/bin/python -m app.connection_worker` 실행이 필요합니다. 인증정보 저장 전 `.env`에 `CONNECTION_ENCRYPTION_KEY`를 설정합니다.
 
 GitHub Actions는 PR에서 테스트하고 main 반영 시 테스트 통과 후 팀 서버의 **8000 포트**에 API·워커를 배포합니다. 초기 설정·비밀값·백업·복구 절차는 [배포 문서](docs/DEPLOYMENT.md)에 있습니다.

@@ -72,4 +72,4 @@ class ErrorResponse(BaseModel):
     error: ErrorDetail
 
 
-ERROR_RESPONSES = {status: {'model': ErrorResponse} for status in (400, 401, 404, 409, 412, 413, 415, 428, 429, 500, 503)}
+ERROR_RESPONSES = {status: {'model': ErrorResponse} for status in (400, 401, 404, 409, 412, 413, 415, 428, 429, 500, 502, 503, 504)}

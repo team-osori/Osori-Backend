@@ -11,6 +11,8 @@ from app.api.auth import router
 from app.api.projects import router as project_router
 from app.api.connections import router as connection_router
 from app.api.prompts import router as prompt_router
+from app.api.policies import router as policy_router
+from app.api.testsets import router as testset_router
 from app.core.errors import ApiError
 from starlette.exceptions import HTTPException
 from sqlalchemy.exc import OperationalError
@@ -26,6 +28,8 @@ app.include_router(router)
 app.include_router(project_router)
 app.include_router(connection_router)
 app.include_router(prompt_router)
+app.include_router(policy_router)
+app.include_router(testset_router)
 
 
 @app.exception_handler(ApiError)
