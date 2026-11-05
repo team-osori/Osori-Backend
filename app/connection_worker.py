@@ -4,6 +4,7 @@ import asyncio
 from copy import deepcopy
 from datetime import timedelta
 import logging
+import signal
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
@@ -81,8 +82,9 @@ async def process_one(factory=SessionLocal, *, sender=None) -> bool:
     return True
 
 
-async def run(once=False):
-    while True:
+async def run(once=False, stop_event=None):
+    stop_event = stop_event or asyncio.Event()
+    while not stop_event.is_set():
         try:
             worked = await process_one()
         except OperationalError:
@@ -102,9 +104,17 @@ def main():
     parser.add_argument('--once', action='store_true', help='대기 작업을 최대 한 건 처리하고 종료')
     args = parser.parse_args()
     try:
-        asyncio.run(run(args.once))
+        asyncio.run(run_with_signals(args.once))
     except KeyboardInterrupt:
         pass
+
+
+async def run_with_signals(once=False):
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(signum, stop_event.set)
+    await run(once, stop_event)
 
 
 if __name__ == '__main__':

@@ -1,0 +1,136 @@
+name: Backend CI/CD
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python tests and MySQL migrations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root-only
+          MYSQL_DATABASE: osori_test
+          MYSQL_USER: osori_test
+          MYSQL_PASSWORD: ci-test-only
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pci-root-only"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install locked dependencies in a virtual environment
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --require-hashes -r requirements-dev.lock
+          .venv/bin/python -m pip check
+      - name: Validate deployment scripts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          bash -n deploy/bootstrap.sh deploy/deploy.sh
+          shellcheck deploy/bootstrap.sh deploy/deploy.sh
+          .venv/bin/python -m compileall -q app deploy
+      - name: Run API and deployment tests
+        run: .venv/bin/python -m pytest -q --tb=short --ignore=tests/test_mysql_auth_integration.py --ignore=tests/test_mysql_connections_integration.py
+      - name: Run MySQL concurrency and regression tests
+        env:
+          OSORI_TEST_MYSQL_URL: mysql+pymysql://osori_test:ci-test-only@127.0.0.1:3306/osori_test?charset=utf8mb4
+          AUTH_SIGNUP_RATE_LIMIT: '1000'
+          AUTH_LOGIN_RATE_LIMIT: '1000'
+        run: .venv/bin/python -m pytest -q --tb=short tests/test_mysql_auth_integration.py tests/test_mysql_connections_integration.py
+      - name: Check migrated MySQL schema against models
+        env:
+          DATABASE_URL: mysql+pymysql://osori_test:ci-test-only@127.0.0.1:3306/osori_test?charset=utf8mb4
+        run: .venv/bin/python -m alembic check
+
+  deploy:
+    name: Deploy API and worker
+    needs: test
+    if: github.repository == 'team-osori/Osori-Backend' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: http://16.208.41.218:8000/docs
+    concurrency:
+      group: osori-production
+      cancel-in-progress: false
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Skip a superseded commit
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [[ "$latest" == "$GITHUB_SHA" ]]; then
+            echo 'deploy=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'A newer main commit exists; skipping this obsolete deployment.'
+          fi
+      - name: Configure SSH with pinned server identity
+        if: steps.current.outputs.deploy == 'true'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_HOST" && test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_SSH_KEY" && test -n "$DEPLOY_KNOWN_HOSTS"
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          umask 077
+          mkdir -p "$RUNNER_TEMP/osori-ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/osori-ssh/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/osori-ssh/known_hosts"
+      - name: Package the exact tested commit
+        if: steps.current.outputs.deploy == 'true'
+        run: git archive --format=tar.gz --output="$RUNNER_TEMP/osori-release.tar.gz" "$GITHUB_SHA"
+      - name: Deploy over restricted SSH
+        if: steps.current.outputs.deploy == 'true'
+        run: |
+          ssh -i "$RUNNER_TEMP/osori-ssh/key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/osori-ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "deploy $GITHUB_SHA $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT" \
+            < "$RUNNER_TEMP/osori-release.tar.gz"
+      - name: Verify public readiness and deployed revision
+        if: steps.current.outputs.deploy == 'true'
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          curl --fail --silent --show-error --retry 5 --retry-delay 3 \
+            --connect-timeout 5 --max-time 10 \
+            "http://$DEPLOY_HOST:8000/api/ready" \
+            | python -c 'import json,os,sys; data=json.load(sys.stdin); assert data == {"status":"ok","revision":os.environ["EXPECTED_REVISION"]}, "Unexpected deployed revision"'
+      - name: Remove temporary credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/osori-ssh"
