@@ -2,7 +2,7 @@ import hashlib
 import json
 from copy import deepcopy
 from datetime import timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, Query, Response
 from sqlalchemy import select, update
@@ -11,15 +11,17 @@ from sqlalchemy.exc import IntegrityError
 from app.api.dependencies import CurrentUser, Db, OwnedService, ResourceId
 from app.api.policies import Cursor, Limit
 from app.core.errors import ApiError
-from app.models.evaluation import Evaluation, EvaluationItem, EvaluationReview
+from app.models.evaluation import Evaluation, EvaluationItem, EvaluationReview, EvaluationAnswerReview
 from app.schemas.evaluation import (Criterion, EvaluationCreate, EvaluationInputs, EvaluationItemResponse,
-    EvaluationItemSummary, EvaluationResponse, EvaluationSummary, EvaluationRerun, EvaluationComparison)
+    EvaluationItemSummary, EvaluationResponse, CauseArea, AnalysisStatus, ScreenStatus, EvaluationSummary, EvaluationRerun, EvaluationComparison)
 from app.schemas.responses import Data, Page, ERROR_RESPONSES
 from app.services import evaluations as service
 from app.services import evaluation_analysis as analysis
+from app.services import evaluation_grading as grading
+from app.schemas.grading import GradingBoard
 from app.schemas.condition_evaluation import IssueKind
-from app.schemas.condition_evaluation import ReviewCreate, ReviewOut
-from app.services.evaluation_reviews import latest_reviews, review_data
+from app.schemas.condition_evaluation import ReviewCreate, ReviewOut, AnswerReviewCreate, AnswerReviewOut
+from app.services.evaluation_reviews import latest_reviews, review_data, latest_answer_reviews, answer_review_data
 from app.services.evaluation_comparison import compare
 from app.services.auth import now
 from app.services.evaluation_judge import EvaluationJudge, get_evaluation_judge
@@ -112,7 +114,21 @@ def get_summary(evaluationId: ResourceId, service_row: OwnedService, db: Db):
     row = service.get_run(db, service_row.id, evaluationId)
     items = db.scalars(select(EvaluationItem).where(EvaluationItem.evaluation_id == row.id)).all()
     reviews = latest_reviews(db, [item.id for item in items])
-    return {'data': {**service.aggregate(row, items), 'analysis': analysis.summarize(row, items, reviews)}}
+    return {'data': {**service.aggregate(row, items), 'analysis': analysis.summarize(row, items, reviews,
+        latest_answer_reviews(db, [item.id for item in items]))}}
+
+
+def analyzed_item_summary(run, item, detail):
+    return {**service.item_summary(item, run.inputs),
+            'resultStatus': detail['status'], 'needsReview': detail['needsReview'],
+            'screenStatus': detail['screenStatus'], 'analysisStatus': detail['analysisStatus'],
+            'activeHypothesisAreas': detail['activeHypothesisAreas']}
+
+
+@router.get('/{evaluationId}/grading', response_model=Data[GradingBoard])
+def get_grading_board(evaluationId: ResourceId, service_row: OwnedService, db: Db):
+    """최대 200개 문항의 고정 번호·상태를 답변 원문 없이 한 번에 조회합니다."""
+    return {'data': grading.board(db, service.get_run(db, service_row.id, evaluationId))}
 
 
 @router.get('/{evaluationId}/items', response_model=Data[Page[EvaluationItemSummary]])
@@ -120,9 +136,15 @@ def list_items(evaluationId: ResourceId, service_row: OwnedService, db: Db,
                limit: Limit = 20, cursor: Cursor = None, criterion: Annotated[Criterion | None, Query(description='평가 inputs.criteria.definitions에 포함된 기준만 필터링할 수 있습니다. 미포함 기준은 빈 목록을 반환합니다.')] = None,
                resultStatus: Annotated[str | None, Query(pattern=r'^(MET|UNMET|REVIEW_REQUIRED|JUDGMENT_ERROR|EXECUTION_ERROR|NOT_RUN|IN_PROGRESS)$')] = None,
                issueKind: IssueKind | None = None,
+               side: Literal['a', 'b'] = 'a',
+               screenStatus: ScreenStatus | None = None,
+               causeArea: CauseArea | None = None,
+               analysisStatus: AnalysisStatus | None = None,
                change: Annotated[str | None, Query(pattern=r'^(IMPROVED|WORSENED|UNCHANGED_PASS|UNCHANGED_FAIL|NOT_COMPARABLE)$', description='criterion이 필수이며 COMPARE 평가에서만 사용합니다. SINGLE 평가는 comparison API를 사용하세요.')] = None):
     """Page through per-question improvements/regressions without returning all answers at once."""
     row = service.get_run(db, service_row.id, evaluationId)
+    if side not in service.side_names(row.inputs):
+        raise ApiError(400, 'INVALID_ANALYSIS_SIDE', '평가한 대상만 조회할 수 있습니다.')
     if change and criterion is None:
         raise ApiError(400, 'VALIDATION_ERROR', 'change 필터에는 criterion이 필요합니다.')
     if change and row.inputs.get('mode') == 'SINGLE':
@@ -130,27 +152,34 @@ def list_items(evaluationId: ResourceId, service_row: OwnedService, db: Db,
     if criterion and criterion not in row.inputs['criteria']['definitions']:
         return {'data': {'items': [], 'nextCursor': None}}
     statement = select(EvaluationItem).where(EvaluationItem.evaluation_id == row.id)
-    if change or resultStatus or issueKind:
+    if change or resultStatus or issueKind or screenStatus or causeArea or analysisStatus:
         # Bounded to 200 items by confirmed test-set constraints; filter IDs before paging.
         items = db.scalars(statement).all()
         ids = []
         filtered_reviews = latest_reviews(db, [item.id for item in items])
+        filtered_answers = latest_answer_reviews(db, [item.id for item in items])
         for item in items:
-            detail = analysis.item_analysis(row, item, filtered_reviews)['a']
+            detail = analysis.item_analysis(row, item, filtered_reviews, filtered_answers)[side]
             if change and service.change(item.a, item.b, criterion) != change:
                 continue
             if resultStatus and detail['status'] != resultStatus:
                 continue
             if issueKind and not any(issue['kind'] == issueKind for issue in detail['issues']):
                 continue
+            if screenStatus and detail['screenStatus'] != screenStatus:
+                continue
+            if causeArea and causeArea not in detail['activeHypothesisAreas']:
+                continue
+            if analysisStatus and detail['analysisStatus'] != analysisStatus:
+                continue
             ids.append(item.id)
         statement = statement.where(EvaluationItem.id.in_(ids))
-    scope = f'evaluationItems:{row.id}:{criterion}:{change}:{resultStatus}:{issueKind}'
+    scope = f'evaluationItems:{row.id}:{criterion}:{change}:{resultStatus}:{issueKind}:{side}:{screenStatus}:{causeArea}:{analysisStatus}'
     rows, next_cursor = paginate(db, statement, EvaluationItem, scope, limit, cursor)
     reviews = latest_reviews(db, [item.id for item in rows])
-    return {'data': {'items': [{**service.item_summary(item, row.inputs),
-        'resultStatus': analysis.item_analysis(row, item, reviews)['a']['status'],
-        'needsReview': analysis.item_analysis(row, item, reviews)['a']['needsReview']} for item in rows], 'nextCursor': next_cursor}}
+    answer_reviews = latest_answer_reviews(db, [item.id for item in rows])
+    return {'data': {'items': [analyzed_item_summary(row, item, analysis.item_analysis(row, item, reviews, answer_reviews)[side])
+                              for item in rows], 'nextCursor': next_cursor}}
 
 
 @router.get('/{evaluationId}/items/{itemId}', response_model=Data[EvaluationItemResponse])
@@ -161,34 +190,20 @@ def get_item(evaluationId: ResourceId, itemId: ResourceId, service_row: OwnedSer
     if item is None:
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '평가 문항을 찾을 수 없습니다.')
     reviews = latest_reviews(db, [item.id])
-    details = analysis.item_analysis(row, item, reviews)
-    return {'data': {**service.item_summary(item, row.inputs), 'input': item.input, 'a': item.a, 'b': item.b,
+    details = analysis.item_analysis(row, item, reviews, latest_answer_reviews(db, [item.id]))
+    return {'data': {**analyzed_item_summary(row, item, details['a']), 'input': item.input, 'a': item.a, 'b': item.b,
         'resultStatus': details['a']['status'], 'needsReview': details['a']['needsReview'], 'analysis': details,
-        'reviewRevision': item.review_revision, 'latestReviews': list(reviews.values())}}
+        'reviewRevision': item.review_revision, 'latestReviews': list(reviews.values()),
+        **grading.navigation(db, row, item.question_id)}}
 
 
 @router.post('/{evaluationId}/items/{itemId}/reviews', status_code=201, response_model=Data[ReviewOut])
 def review_item(evaluationId: ResourceId, itemId: ResourceId, body: ReviewCreate,
                 service_row: OwnedService, user: CurrentUser, db: Db):
-    run = service.get_run(db, service_row.id, evaluationId)
-    item = db.scalar(select(EvaluationItem).where(EvaluationItem.id == itemId, EvaluationItem.evaluation_id == run.id))
-    if item is None:
-        raise ApiError(404, 'RESOURCE_NOT_FOUND', '평가 문항을 찾을 수 없습니다.')
-    if run.status not in service.TERMINAL:
-        raise ApiError(409, 'EVALUATION_NOT_TERMINAL', '평가가 종료된 뒤 검토하세요.')
-    if body.side not in service.side_names(run.inputs):
-        raise ApiError(400, 'INVALID_REVIEW_TARGET', '평가한 대상만 검토할 수 있습니다.')
-    side = getattr(item, body.side)
-    if side is None or side['callStatus'] != 'SUCCEEDED':
-        raise ApiError(409, 'ANSWER_UNAVAILABLE', '답변을 확보한 문항만 판정할 수 있습니다.')
+    run, item = review_target(db, service_row.id, evaluationId, itemId, body.side)
     if body.conditionId not in {condition['id'] for condition in item.input.get('expectedConditions', [])}:
         raise ApiError(400, 'INVALID_CONDITION', '해당 문항의 조건을 선택하세요.')
-    result = db.execute(update(EvaluationItem).where(EvaluationItem.id == item.id,
-        EvaluationItem.review_revision == body.expectedRevision).values(review_revision=EvaluationItem.review_revision + 1)
-        .execution_options(synchronize_session=False))
-    if result.rowcount != 1:
-        db.rollback()
-        raise ApiError(409, 'REVISION_CONFLICT', '최신 검토 revision을 확인하세요.')
+    claim_review_revision(db, item, body.expectedRevision)
     review = EvaluationReview(id=uid(), item_id=item.id, revision=body.expectedRevision + 1,
         side=body.side, condition_id=body.conditionId, verdict=body.verdict, reason=body.reason,
         reviewed_by=user.id, created_at=now())
@@ -273,3 +288,54 @@ def resume_evaluation(evaluationId: ResourceId, body: EvaluationResume, service_
     resume_run(db, row, body.connectionRevision, judge)
     db.commit()
     return {'data': service.run_data(row)}
+
+
+
+def review_target(db, service_id, evaluation_id, item_id, side_name):
+    run = service.get_run(db, service_id, evaluation_id)
+    item = db.scalar(select(EvaluationItem).where(EvaluationItem.id == item_id, EvaluationItem.evaluation_id == run.id))
+    if item is None:
+        raise ApiError(404, 'RESOURCE_NOT_FOUND', '평가 문항을 찾을 수 없습니다.')
+    if run.status not in service.TERMINAL:
+        raise ApiError(409, 'EVALUATION_NOT_TERMINAL', '평가가 종료된 뒤 검토하세요.')
+    if side_name not in service.side_names(run.inputs):
+        raise ApiError(400, 'INVALID_REVIEW_TARGET', '평가한 대상만 검토할 수 있습니다.')
+    side = getattr(item, side_name)
+    if side is None or side['callStatus'] != 'SUCCEEDED':
+        raise ApiError(409, 'ANSWER_UNAVAILABLE', '답변을 확보한 문항만 판정할 수 있습니다.')
+    return run, item
+
+
+def claim_review_revision(db, item, expected_revision):
+    result = db.execute(update(EvaluationItem).where(EvaluationItem.id == item.id,
+        EvaluationItem.review_revision == expected_revision).values(review_revision=EvaluationItem.review_revision + 1)
+        .execution_options(synchronize_session=False))
+    if result.rowcount != 1:
+        db.rollback()
+        raise ApiError(409, 'REVISION_CONFLICT', '최신 검토 revision을 확인하세요.')
+
+
+@router.post('/{evaluationId}/items/{itemId}/answer-reviews', status_code=201, response_model=Data[AnswerReviewOut])
+def review_answer(evaluationId: ResourceId, itemId: ResourceId, body: AnswerReviewCreate,
+                  service_row: OwnedService, user: CurrentUser, db: Db):
+    """챗봇 답변 전체 O/X를 저장합니다. 조건별 판정과 충돌하면 화면은 검토 필요로 표시합니다."""
+    run, item = review_target(db, service_row.id, evaluationId, itemId, body.side)
+    claim_review_revision(db, item, body.expectedRevision)
+    review = EvaluationAnswerReview(id=uid(), item_id=item.id, revision=body.expectedRevision + 1,
+        side=body.side, verdict=body.verdict, reason=body.reason, reviewed_by=user.id, created_at=now())
+    db.add(review)
+    db.commit()
+    return {'data': answer_review_data(review)}
+
+
+@router.get('/{evaluationId}/items/{itemId}/answer-reviews', response_model=Data[Page[AnswerReviewOut]])
+def list_answer_reviews(evaluationId: ResourceId, itemId: ResourceId, service_row: OwnedService, db: Db,
+                        limit: Limit = 20, cursor: Cursor = None):
+    run = service.get_run(db, service_row.id, evaluationId)
+    item = db.scalar(select(EvaluationItem.id).where(EvaluationItem.id == itemId, EvaluationItem.evaluation_id == run.id))
+    if item is None:
+        raise ApiError(404, 'RESOURCE_NOT_FOUND', '평가 문항을 찾을 수 없습니다.')
+    rows, next_cursor = paginate(db, select(EvaluationAnswerReview).where(EvaluationAnswerReview.item_id == itemId),
+        EvaluationAnswerReview, f'evaluationAnswerReviews:{itemId}:revision', limit, cursor,
+        versioned=True, sequence=EvaluationAnswerReview.revision)
+    return {'data': {'items': [answer_review_data(review) for review in rows], 'nextCursor': next_cursor}}

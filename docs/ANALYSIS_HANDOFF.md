@@ -173,3 +173,10 @@ Converse의 지정 도구 입력으로 구조화 JSON을 수집하고 도구는 
 연결 설정을 바꾸기 전 접수한 작업은 다른 모델로 처리하지 않고 EXECUTION_CONFIG_UNAVAILABLE로 종료한다.
 Bedrock 오류가 나도 개인 OpenAI 키로 자동 전환하지 않는다. 이전 OpenAI 어댑터는
 명시적인 openai 제공사 설정에서만 사용할 수 있고 배포 기본 경로에서는 사용하지 않는다.
+
+## #28·#29 화면 계약 확장
+
+[평가 화면 및 #30 오답 분석 계약](EVALUATION_SCREEN_CONTRACT.md)을 사용한다.
+기존 resultStatus/criteria/hypotheses를 유지하면서 screenStatus/screenCounts,
+scoreSummary, 활성 원인 가설 필터·문항 수, promptContext, 전체 답변 O/X 검토 이력을 추가했다.
+현재 화면 집계는 오류·미판정·전체 판정 충돌을 정답/오답과 분리한다.

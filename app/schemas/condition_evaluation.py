@@ -99,3 +99,22 @@ class ReviewOut(BaseModel):
     reason: str
     reviewedBy: str
     createdAt: str
+
+
+class AnswerReviewCreate(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    expectedRevision: Annotated[int, Field(strict=True, ge=0, le=2**31 - 1)]
+    side: Literal['a', 'b'] = 'a'
+    verdict: Literal['pass', 'fail', 'not_evaluable']
+    reason: RequiredText | None = None
+
+
+class AnswerReviewOut(BaseModel):
+    id: str
+    itemId: str
+    revision: int
+    side: Literal['a', 'b']
+    verdict: Literal['pass', 'fail', 'not_evaluable']
+    reason: str | None
+    reviewedBy: str
+    createdAt: str
