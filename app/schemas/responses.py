@@ -1,6 +1,6 @@
 from typing import Generic, TypeVar
 from pydantic import BaseModel, Field
-from app.schemas.project import ProjectProgress
+from app.schemas.project import ProjectProgress, ProjectServiceSummary, LatestEvaluationSummary
 
 T = TypeVar('T')
 
@@ -46,6 +46,13 @@ class ProjectResponse(BaseModel):
     createdAt: str
     updatedAt: str
     progress: ProjectProgress = Field(default_factory=ProjectProgress)
+    service: ProjectServiceSummary | None = None
+    latestEvaluation: LatestEvaluationSummary | None = None
+
+
+class ProjectPage(Page[ProjectResponse]):
+    total: int
+    statusCounts: dict[str, int]
 
 
 class ChatbotResponse(BaseModel):

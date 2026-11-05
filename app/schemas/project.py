@@ -1,9 +1,10 @@
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from app.schemas.evaluation import CriterionSummary
 
 
-class ProjectCreate(BaseModel):
+class ChatbotCreate(BaseModel):
     model_config = ConfigDict(extra='forbid')
     name: Annotated[str, Field(min_length=1, max_length=50)]
     description: Annotated[str | None, Field(max_length=2000)] = None
@@ -23,8 +24,8 @@ class ProjectCreate(BaseModel):
         return value
 
 
-class ChatbotCreate(ProjectCreate):
-    pass
+class ProjectCreate(ChatbotCreate):
+    service: ChatbotCreate | None = None
 
 
 class ProjectPatch(BaseModel):
@@ -76,3 +77,24 @@ class ProjectProgress(BaseModel):
     lastEvaluatedAt: str | None = None
     promptVersion: int | None = Field(default=None,
         description='최신 평가의 A측 명시적 프롬프트 버전. 기업 설정 프롬프트 사용 또는 평가 없음은 null')
+
+
+class ProjectServiceSummary(BaseModel):
+    id: str
+    name: str
+    revision: int
+    hasConnection: bool
+    endpointHost: str | None
+    connectionRevision: int | None
+    connectionVerified: bool
+
+
+class LatestEvaluationSummary(BaseModel):
+    id: str
+    status: Literal['QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED']
+    mode: Literal['SINGLE', 'COMPARE']
+    criteriaVersion: int
+    createdAt: str
+    finishedAt: str | None
+    provisional: bool
+    criteria: dict[str, CriterionSummary]

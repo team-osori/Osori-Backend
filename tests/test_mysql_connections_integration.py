@@ -36,6 +36,44 @@ def concurrently(action):
         return [f.result(timeout=20) for f in futures]
 
 
+def test_mysql_concurrent_project_service_creation(mysql_client):
+    from app.models.project import Chatbot, Project
+    client, sessions, _, _ = mysql_client
+    user = signup_and_login(client)
+    headers = {'Authorization': 'Bearer ' + user['accessToken'], 'Idempotency-Key': 'project-wizard'}
+    body = {'name': '동시 생성', 'service': {'name': '기업 챗봇'}}
+    responses = concurrently(lambda _: client.post('/api/projects', headers=headers, json=body))
+    assert [r.status_code for r in responses] == [201, 201], [r.text for r in responses]
+    assert len({r.json()['data']['id'] for r in responses}) == 1
+    project_id = responses[0].json()['data']['id']
+    with sessions() as db:
+        assert db.scalar(select(func.count()).select_from(Project).where(Project.owner_id == user['user']['id'])) == 1
+        assert db.scalar(select(func.count()).select_from(Chatbot).where(Chatbot.project_id == project_id)) == 1
+    conflict = client.post('/api/projects', headers=headers, json={'name': '다른 요청'})
+    assert conflict.status_code == 409 and conflict.json()['error']['code'] == 'IDEMPOTENCY_CONFLICT'
+
+
+def test_mysql_project_list_search_counts_and_summary(mysql_client):
+    from uuid import uuid4
+    client, _, _, _ = mysql_client
+    user = signup_and_login(client)
+    headers = {'Authorization': 'Bearer ' + user['accessToken']}
+    token = uuid4().hex
+    for index in range(3):
+        response = client.post('/api/projects', headers=headers,
+            json={'name': f'{token}-{index}', 'service': {'name': '챗봇'}})
+        assert response.status_code == 201, response.text
+    first = client.get('/api/projects', headers=headers,
+        params={'search': token, 'status': 'SETUP', 'limit': 2})
+    assert first.status_code == 200, first.text
+    page = first.json()['data']
+    assert page['total'] == 3 and page['statusCounts'] == {'SETUP': 3, 'RUNNING': 0, 'DONE': 0}
+    assert page['items'][0]['service']['name'] == '챗봇'
+    second = client.get('/api/projects', headers=headers,
+        params={'search': token, 'status': 'SETUP', 'cursor': page['nextCursor']}).json()['data']
+    assert len(second['items']) == 1 and second['nextCursor'] is None
+
+
 def test_mysql_concurrent_prompt_versions(mysql_client):
     client, sessions, _, _ = mysql_client
     headers, service, prompt = resources(client)
