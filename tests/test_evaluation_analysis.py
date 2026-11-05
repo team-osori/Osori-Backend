@@ -71,3 +71,10 @@ def test_legacy_profile_can_display_and_review_a_source_conditions():
     assert result['conditions'][0]['kind'] == 'forbidden'
     assert result['conditions'][0]['policyEvidence']['quote'] == '취소 기한'
     assert question == original and 'conditionResults' not in side
+
+
+def test_failed_condition_is_visible_even_when_all_category_summaries_pass():
+    """Individual expectations remain authoritative for the overall item status."""
+    side = {'callStatus': 'SUCCEEDED', 'criteria': {'policy': {'status': 'judged', 'verdict': 'pass'}},
+            'conditionResults': [{'conditionId': 'c', 'status': 'judged', 'verdict': 'fail'}]}
+    assert describe_side({}, side)['status'] == 'UNMET'
