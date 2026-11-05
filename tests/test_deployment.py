@@ -82,3 +82,20 @@ def test_worker_finishes_current_job_before_stopping(monkeypatch):
         assert events == ['started', 'completed']
 
     asyncio.run(scenario())
+
+
+def test_release_health_requires_every_worker(tmp_path):
+    """Fail release readiness when any individual API or worker unit is inactive."""
+    import subprocess
+    source = (Path(__file__).resolve().parents[1] / 'deploy/deploy.sh').read_text()
+    start = source.index('all_services_ready() {')
+    function = source[start:source.index('\n}\n', start) + 3]
+    executable = tmp_path / 'systemctl'
+    executable.write_text('#!/bin/sh\n[ "$3" != "$OFFLINE_UNIT" ]\n')
+    executable.chmod(0o755)
+    import os
+    for offline in ('none', 'osori-api', 'osori-worker', 'osori-evaluation-worker'):
+        script = function + '\nservices=(osori-api osori-worker osori-evaluation-worker)\nall_services_ready\n'
+        result = subprocess.run(['bash', '-c', script], env={**os.environ,
+            'PATH': str(tmp_path) + os.pathsep + os.environ['PATH'], 'OFFLINE_UNIT': offline})
+        assert (result.returncode == 0) == (offline == 'none')

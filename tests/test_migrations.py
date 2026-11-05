@@ -15,7 +15,8 @@ def test_migration_upgrade_and_downgrade(tmp_path):
     engine = create_engine(env['DATABASE_URL'])
     assert {'users', 'auth_sessions', 'auth_rate_windows', 'used_refresh_tokens', 'projects', 'services',
             'chatbot_connections', 'connection_tests', 'prompts', 'prompt_versions',
-            'policies', 'policy_versions', 'testsets', 'testset_versions', 'test_questions', 'question_generation_requests'} <= set(inspect(engine).get_table_names())
+            'policies', 'policy_versions', 'testsets', 'testset_versions', 'test_questions', 'question_generation_requests',
+            'evaluations', 'evaluation_items'} <= set(inspect(engine).get_table_names())
     subprocess.run([sys.executable, '-m', 'alembic', 'check'], cwd=root, env=env, check=True)
     subprocess.run([sys.executable, '-m', 'alembic', 'downgrade', 'base'], cwd=root, env=env, check=True)
     assert 'users' not in inspect(engine).get_table_names()

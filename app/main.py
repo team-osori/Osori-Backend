@@ -13,6 +13,7 @@ from app.api.connections import router as connection_router
 from app.api.prompts import router as prompt_router
 from app.api.policies import router as policy_router
 from app.api.testsets import router as testset_router
+from app.api.evaluations import router as evaluation_router
 from app.core.errors import ApiError
 from starlette.exceptions import HTTPException
 from sqlalchemy.exc import OperationalError
@@ -30,6 +31,7 @@ app.include_router(connection_router)
 app.include_router(prompt_router)
 app.include_router(policy_router)
 app.include_router(testset_router)
+app.include_router(evaluation_router)
 
 
 @app.exception_handler(ApiError)

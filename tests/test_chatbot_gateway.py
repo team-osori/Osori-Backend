@@ -160,3 +160,71 @@ def test_header_auth_and_connection_only():
         return 'answer'
 
     assert asyncio.run(gateway.execute_chatbot(config, 'Q', None, 'secret', sender=sender)).answer == 'answer'
+
+
+@pytest.mark.parametrize('documents,citations,code', [
+    ([{'id': 'policy-v1', 'title': '취소 정책', 'text': '24시간 전까지 취소 가능', 'source': 'policy/refund/v1'}],
+     [{'documentId': 'policy-v1', 'quote': '24시간 전까지'}], None),
+    ([], [], None),
+    (None, None, None),
+    ([{'id': 'policy-v1', 'text': 'original'}], [{'documentId': 'policy-v1', 'quote': 'invented'}], 'INVALID_UPSTREAM_RESPONSE'),
+    ([{'id': 'same', 'text': 'A'}, {'id': 'same', 'text': 'B'}], [], 'INVALID_UPSTREAM_RESPONSE'),
+    ('unexpected', [], 'INVALID_UPSTREAM_RESPONSE'),
+])
+def test_retrieval_json_transport(monkeypatch, documents, citations, code):
+    """Parse real JSON transport shapes and reject invalid retrieval evidence."""
+    import json
+    raw = json.dumps({'answer': '답변', 'retrieval': {'documents': documents}, 'citations': citations}).encode()
+
+    class Content:
+        async def iter_chunked(self, size):
+            """Stream an in-memory response body through the production size and JSON parser."""
+            yield raw
+
+    class Response:
+        status = 200
+        content = Content()
+        headers = {}
+        async def __aenter__(self):
+            """Enter the in-memory transport response context."""
+            return self
+        async def __aexit__(self, *args):
+            """Release the transport test context and its connector where applicable."""
+            pass
+
+    class Session:
+        def __init__(self, **kwargs):
+            """Keep the isolated connector available for deterministic transport cleanup."""
+            self.connector = kwargs['connector']
+        async def __aenter__(self):
+            """Enter the in-memory transport response context."""
+            return self
+        async def __aexit__(self, *args):
+            """Release the transport test context and its connector where applicable."""
+            await self.connector.close()
+        def post(self, *args, **kwargs):
+            """Return a local response without performing an HTTP request."""
+            return Response()
+
+    monkeypatch.setattr(gateway.aiohttp, 'ClientSession', Session)
+    config = {**CONFIG, 'retrievalPointer': '/retrieval/documents', 'citationsPointer': '/citations'}
+    result = asyncio.run(gateway.execute_chatbot(config, 'Q', 'P', 'secret'))
+    if code:
+        assert result.error['code'] == code
+        assert result.answer is None
+    else:
+        assert result.answer == '답변' and result.error is None
+        assert result.evidence['documents'] == documents
+        assert result.evidence['citations'] == citations
+
+
+def test_credential_echo_is_removed_from_retrieval_evidence():
+    """Mask credential echoes in both answers and referenced retrieval text."""
+    async def sender(*args):
+        """Simulate the company transport without opening a network connection."""
+        return gateway.ChatbotReply('answer secret', {'documents': [{'id': 'd', 'text': 'source secret'}],
+            'citations': [{'documentId': 'd', 'quote': 'source secret'}]})
+
+    result = asyncio.run(gateway.execute_chatbot(CONFIG, 'Q', 'P', 'secret', sender=sender))
+    assert 'secret' not in str(result)
+    assert result.evidence['documents'][0]['text'] == 'source [REDACTED]'

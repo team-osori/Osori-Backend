@@ -52,13 +52,13 @@ jobs:
           shellcheck deploy/bootstrap.sh deploy/deploy.sh
           .venv/bin/python -m compileall -q app deploy
       - name: Run API and deployment tests
-        run: .venv/bin/python -m pytest -q --tb=short --ignore=tests/test_mysql_auth_integration.py --ignore=tests/test_mysql_connections_integration.py
+        run: .venv/bin/python -m pytest -q --tb=short --ignore=tests/test_mysql_auth_integration.py --ignore=tests/test_mysql_connections_integration.py --ignore=tests/test_mysql_evaluations_integration.py
       - name: Run MySQL concurrency and regression tests
         env:
           OSORI_TEST_MYSQL_URL: mysql+pymysql://osori_test:ci-test-only@127.0.0.1:3306/osori_test?charset=utf8mb4
           AUTH_SIGNUP_RATE_LIMIT: '1000'
           AUTH_LOGIN_RATE_LIMIT: '1000'
-        run: .venv/bin/python -m pytest -q --tb=short tests/test_mysql_auth_integration.py tests/test_mysql_connections_integration.py
+        run: .venv/bin/python -m pytest -q --tb=short tests/test_mysql_auth_integration.py tests/test_mysql_connections_integration.py tests/test_mysql_evaluations_integration.py
       - name: Check migrated MySQL schema against models
         env:
           DATABASE_URL: mysql+pymysql://osori_test:ci-test-only@127.0.0.1:3306/osori_test?charset=utf8mb4
