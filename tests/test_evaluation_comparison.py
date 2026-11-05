@@ -76,7 +76,7 @@ def test_unjudged_conditions_are_not_counted_as_improvement(single_ready):
     target = response.headers['location']
     asyncio.run(worker.process_one(factory, sender=answer))
     result = client.get(target + '/comparison', headers=headers).json()['data']
-    assert result['counts']['NOT_COMPARABLE'] == 1
+    assert result['counts']['NOT_COMPARABLE'] == 2
     assert result['outcome'] == 'INCOMPLETE'
 
 

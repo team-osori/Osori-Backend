@@ -133,3 +133,15 @@ counts의 단위는 문항이 아닌 조건이다. 미판정·호출 실패는 N
 조건별로 최신 담당자 판정을 우선하며, 각 문항의 비교에 사용한 reviewRevision을 응답한다.
 전체 counts와 페이징된 items/nextCursor를 반환한다. limit/cursor는 기존 목록 규칙을 따른다.
 검토 이력이 달라지면 이전 비교 커서는 무효화되므로 처음부터 새로 조회한다.
+DB 마이그레이션 20261105_09을 적용해야 한다.
+## A 담당 구현과의 확정 연결 (PR #14 반영)
+
+A의 실제 조건 형식은 id, description, kind(required/forbidden), category,
+policyVersionId, ruleKeys, evidenceQuote다. B는 이를 읽어 평가 전용 스냅샷에
+requirement=description, sourceQuote=evidenceQuote를 대응시키며 **조건 ID와 kind·category·ruleKeys를 보존**한다.
+response 분류는 질문 해결도에 대응하며 retrieval/grounding은 별도 진단 조건으로 유지한다.
+분류명 때문에 필수·금지 조건을 합치거나 생략하지 않는다. forbidden 조건의 pass는 금지 행동을 하지 않았다는 의미다.
+
+A의 schemaVersion=2 확정본을 직접 수용한다. schemaVersion=1 과거 확정본은
+A의 legacy_conditions 규칙으로 기대 행동 및 모든 금지 행동에 안정적인 조건 ID를 구성한다.
+이미 저장한 B 스냅샷의 기존 조건 ID도 그대로 읽는다. 원본 확정본과 과거 평가 결과는 수정하지 않는다.
