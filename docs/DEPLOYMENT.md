@@ -123,18 +123,22 @@ docker run --rm --network none -v "$PWD:/source:ro" \
   python -I /source/tests/deployment_isolation_check.py
 ```
 
-## OpenAI 질문 생성 키
+## Bedrock 질문 생성·평가 판정
 
-production 환경 Secret `QUESTION_GENERATION_API_KEY`와 Variable `QUESTION_GENERATION_MODEL`을 사용합니다. 모델 기본 배포 설정은 `gpt-4.1-mini-2025-04-14`입니다. 키는 repository 파일·artifact·명령줄 인자에 넣지 않습니다. 테스트/PR job에는 키를 주입하지 않으며 main 배포 job의 설정 동기화 step에서만 사용합니다.
+대회 서버 IAM 역할을 사용한다. AWS 액세스 키나 개인 AI API 키를 GitHub에 추가할 필요가 없다.
+production 환경의 공개 Variables는 BEDROCK_REGION, BEDROCK_GENERATION_MODEL, BEDROCK_JUDGE_MODEL이다.
+비어 있으면 ap-northeast-3 및 Claude Haiku 4.5를 사용한다. 전체 설정은 [Bedrock 연동](BEDROCK_SETUP.md)에 있다.
 
-`deploy/question_generation_env.py emit`의 JSON 출력을 SSH 표준입력으로 직접 전달합니다. `configure-question-generation` 제한 명령은 root 소유 helper로 `/etc/osori-backend.env`의 질문 생성 provider/model/key 세 항목만 원자적으로 갱신합니다. 기존 DB 비밀번호·암호화 키를 보존하며 파일은 root:osori 640입니다. 새 릴리스 배포가 제한 명령 도구를 설치한 다음 설정을 동기화합니다. 설정이 변경된 경우에만 API를 재시작해 적용하고, 같으면 재시작하지 않습니다. 연결/평가 워커는 키 동기화로 재시작하지 않습니다.
+제한 SSH 명령 configure-question-generation은 기존 명칭을 유지하지만 생성과 판정을 함께 설정한다.
+root 소유 deploy/question_generation_env.py가 리전과 두 모델 ID만 검증하고
+/etc/osori-backend.env를 원자적으로 갱신한다. 기존 DB·기업 챗봇 암호화 설정은 보존하고
+개인 OPENAI_API_KEY·QUESTION_GENERATION_API_KEY·EVALUATION_JUDGE_API_KEY는 제거한다.
+파일 권한은 root:osori 640이며 값이 바뀐 경우 API와 평가 워커를 함께 재시작한다.
 
-기존 서버에 키만 먼저 준비하려면 관리자 세션에서 아래 도구를 설치할 수 있습니다. 일반 배포에서는 새 릴리스가 도구를 설치한 뒤 키를 동기화하므로 이 수동 단계가 필요하지 않습니다. 도구 설치만으로는 애플리케이션 코드·DB·프로세스를 변경하지 않습니다.
-
-```bash
-sudo install -m 0644 deploy/question_generation_env.py /usr/local/lib/osori/question_generation_env.py
-sudo install -m 0755 deploy/deploy.sh /usr/local/sbin/osori-deploy
-sudo install -m 0755 deploy/ssh_entrypoint.py /usr/local/bin/osori-ci-entrypoint
-```
-
-Secret이나 모델 변수가 비어 있거나 유효하지 않으면 설정 동기화가 실패하고 Actions도 실패합니다. 릴리스 배포 후 수행되므로 이 경우 이미 배포된 앱은 유지되며 기존 키가 있으면 그대로 사용합니다. 키 변경은 GitHub production Secret을 교체한 뒤 main 배포를 실행하면 반영됩니다. 키 만료 시 API는 GENERATION_AUTH_FAILED를 반환하며 키 갱신이 필요합니다. 만료된 키가 자동 재발급되지는 않습니다. 실패한 앱 배포는 기존 앱을 복원하지만 별도 동기화한 질문 생성 설정은 유지합니다.
+설정 동기화는 새 릴리스 설치 후에 실행된다. 잘못된 리전·모델 형식이나 helper 실패는 Actions 실패로 표시한다.
+검증·파일 갱신 실패 시 이전 설정은 보존되고 이미 배포한 앱은 유지된다. 파일 반영 후 서비스 재시작이
+실패하면 새 설정은 남고 Actions는 실패하므로 서비스 상태를 확인한다. 공개 readiness는 DB·릴리스·프로세스
+상태 확인이며 실제 Bedrock 호출 권한 및 모델 응답 품질까지 증명하지 않는다.
+AWS_REGION과 AWS_DEFAULT_REGION을 서비스 환경에 동일하게 적용하므로 SSH 사용자 홈의 AWS 설정에 의존하지 않는다.
+전환 전 큐에 남은 OpenAI 설정의 평가는 다른 모델로 재실행하지 않고 EXECUTION_CONFIG_UNAVAILABLE로 종료하므로
+새 Bedrock 평가를 접수한다. 과거 스냅샷과 결과는 변경하지 않는다.

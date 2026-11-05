@@ -127,11 +127,12 @@ def test_mysql_single_evaluation_and_concurrent_human_reviews(mysql_client, monk
         assert len(db.scalars(select(EvaluationReview).where(EvaluationReview.item_id == item['id'])).all()) == 1
 
 
-def test_mysql_a_generation_through_b_analysis_and_rerun(mysql_client, monkeypatch):
+@pytest.mark.parametrize('provider', ['openai', 'bedrock'])
+def test_mysql_a_generation_through_b_analysis_and_rerun(mysql_client, monkeypatch, provider):
     """Round-trip A's real conditions/history and B's judgments/comparison through MySQL."""
     from test_a_b_workflow import test_generated_a_conditions_flow_through_b_analysis_and_frozen_rerun
     client, factory, _, _ = mysql_client
     headers, service, original, _ = prepare(factory, client, monkeypatch)
     body = {key: original[key] for key in ('connectionRevision', 'testSetVersionId')}
     ready = (factory, client, headers, service, body, original)
-    test_generated_a_conditions_flow_through_b_analysis_and_frozen_rerun(ready, monkeypatch)
+    test_generated_a_conditions_flow_through_b_analysis_and_frozen_rerun(ready, monkeypatch, provider)

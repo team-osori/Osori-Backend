@@ -4,7 +4,7 @@
 
 텍스트 정책 원문과 규칙을 저장하고, 정책 버전을 근거로 질문·기대 행동·금지 행동을 작성하여 사람이 검토·확정하는 기능입니다. PDF 업로드는 이번 범위에 포함하지 않습니다.
 
-OpenAI Responses API 질문 생성 어댑터를 연결했습니다. `QUESTION_GENERATION_PROVIDER=openai` 및 `QUESTION_GENERATION_API_KEY`(로컬은 `OPENAI_API_KEY`도 지원)를 설정하면 활성화합니다. 기본 모델은 `gpt-4.1-mini-2025-04-14`입니다. 미설정 시 `503 GENERATION_NOT_CONFIGURED`이며 가짜 질문은 만들지 않습니다. 새 조건·이력 API와 B 담당 연동 규칙은 [A 기능 인계](QUESTION_GENERATION_HANDOFF.md)에 있습니다.
+Bedrock 질문 생성 어댑터를 연결했습니다. 기본 모델은 Claude Haiku 4.5이며 서버 IAM 역할을 사용합니다. `QUESTION_GENERATION_PROVIDER=bedrock`으로 활성화하고 개인 API 키를 사용하지 않습니다. 미설정 시 `503 GENERATION_NOT_CONFIGURED`이며 가짜 질문은 만들지 않습니다. 설정은 [Bedrock 연동](BEDROCK_SETUP.md), 조건·이력 계약은 [A 기능 인계](QUESTION_GENERATION_HANDOFF.md)에 있습니다.
 
 ## 실행
 
@@ -123,7 +123,7 @@ Swagger `/docs`에서 요청·응답 스키마를 확인할 수 있습니다. �
 
 Idempotency-Key 헤더가 필수입니다. 같은 사용자·버전·키·Body는 성공 후 24시간 원래 결과를 재사용합니다. Body가 다르면 409입니다. 재사용 응답은 당시 결과이므로 현재 상태가 필요하면 버전을 다시 조회하세요. 실패는 문항·revision·재사용 레코드를 남기지 않습니다. 한 번에 1~50개를 요청할 수 있습니다.
 
-기업 챗봇 호출과 별개로 `app/services/question_generation.py`의 OpenAI 어댑터가 정책 원문·규칙을 전송합니다. Structured Outputs 결과를 다시 검증하며, 요청은 60초·입력 512KiB·응답 2MiB로 제한합니다. 사용자당 호출 제한은 공통 AUTH_RATE_WINDOW_SECONDS(기본 60초)당 10회이며 실패와 재사용 요청도 포함합니다. 자동 재시도는 하지 않습니다. 생성 유형 선택·오류와 비용 관리 방법은 A 기능 인계를 참고하세요.
+기업 챗봇 호출과 별개로 `app/services/bedrock_ai.py`의 Bedrock 어댑터가 정책 원문·규칙을 전송합니다. 도구 입력으로 받은 JSON을 다시 검증하며, 연결 5초·응답 읽기 55초·입력 512KiB·응답 2MiB로 제한합니다. 사용자당 호출 제한은 공통 AUTH_RATE_WINDOW_SECONDS(기본 60초)당 10회이며 실패와 재사용 요청도 포함합니다. 자동 재시도는 하지 않습니다. 생성 유형 선택·오류와 비용 관리 방법은 A 기능 인계를 참고하세요.
 
 생성 결과는 개수·길이·스키마·정책 소속·규칙·근거 인용을 검사한 뒤 하나의 트랜잭션으로 저장합니다. 생성된 질문은 항상 pending입니다. 승인 또는 확정을 AI가 수행하지 않습니다.
 

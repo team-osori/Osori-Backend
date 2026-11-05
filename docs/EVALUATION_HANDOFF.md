@@ -126,7 +126,7 @@ RUNNING·INTERRUPTED의 `attemptCount`, `latencyMs`는 미확정이므로 null�
 
 ## 판정 모델 연결
 
-사용할 모델·API 키는 미정입니다. `.env.example`의 `EVALUATION_JUDGE_PROVIDER`, `EVALUATION_JUDGE_MODEL`, `EVALUATION_JUDGE_API_KEY`는 빈 예약 항목이며 값 입력만으로 모델을 호출하지 않습니다.
+`EVALUATION_JUDGE_PROVIDER=bedrock`으로 서버 IAM 역할 기반 판정을 활성화합니다. 기본 모델은 Claude Haiku 4.5이며 API 키는 필요 없습니다. 이 문서는 기존 v1 네 기준을 설명하며 v2 조건별 판정은 [분석 인계](ANALYSIS_HANDOFF.md), 실제 모델·리전 설정은 [Bedrock 연동](BEDROCK_SETUP.md)을 참고하세요.
 
 `app/services/evaluation_judge.py`의 `get_evaluation_judge()`에 선택한 제공사 어댑터를 연결하세요. API 프로세스와 평가 워커에 같은 구현·설정을 배포합니다. `descriptor()`에는 어댑터 및 판정 프롬프트 버전·제공사·모델·생성 설정 등 결과에 영향을 주는 비밀이 아닌 식별 정보를 담고, `judge()`는 저장된 질문·정책·기준·답변·검색 근거를 사용해 아래 네 기준을 모두 반환해야 합니다.
 
@@ -163,7 +163,7 @@ RUNNING·INTERRUPTED의 `attemptCount`, `latencyMs`는 미확정이므로 null�
 
 문항 상세의 `a.evidenceCatalog`·`b.evidenceCatalog`에는 text를 중복 저장하지 않고 ID·kind·source_id 연결을 제공합니다. kind=answer는 해당 쪽의 answer, kind=policy는 `/inputs`의 testSet.policies에서 source_id와 id가 같은 정책 버전의 content, kind=retrieval은 해당 쪽 evidence.documents에서 id가 source_id와 같은 문서의 text로 원문을 확인합니다. `explanation`은 모델의 해석이며 그 자체를 원문으로 취급하지 않습니다.
 
-워커는 30초 제한·네 기준의 출력 구조·상태와 verdict 조합·요청한 question_id 일치·근거 ID 존재를 검사합니다. 잘못된 출력은 `INVALID_JUDGE_OUTPUT`입니다. 근거 설명의 의미적 정확성은 선택한 모델과 실제 사례로 검증해야 합니다. 어댑터는 정책·질문·기업 답변을 신뢰할 수 없는 평가 자료로 취급하고, 그 안의 지시가 평가 기준이나 시스템 지시를 덮어쓰지 않도록 작성해야 합니다.
+Bedrock 판정은 워커 120초(연결 5초·응답 읽기 110초), 기존 OpenAI 어댑터는 워커 30초 제한을 적용합니다. 워커는 네 기준의 출력 구조·상태와 verdict 조합·요청한 question_id 일치·근거 ID 존재를 검사합니다. 잘못된 출력은 `INVALID_JUDGE_OUTPUT`입니다. 근거 설명의 의미적 정확성은 선택한 모델과 실제 사례로 검증해야 합니다. 어댑터는 정책·질문·기업 답변을 신뢰할 수 없는 평가 자료로 취급하고, 그 안의 지시가 평가 기준이나 시스템 지시를 덮어쓰지 않도록 작성해야 합니다.
 
 현재 기본 어댑터는 네 기준 모두 `status=not_evaluable`, `verdict=null`, `judgeError=JUDGE_NOT_CONFIGURED`를 반환합니다. 검색 정보가 미제공이면 모델이 연결되어도 retrieval·grounding은 `status=not_evaluable`, `verdict=null`입니다. `documents: []`는 자료가 없는 검색 결과 자체를 평가할 수 있습니다. 모델이 연결되기 전에 종료한 결과를 자동 재판정하지 않습니다. 모델 연결 후 새 실행을 제출하세요.
 

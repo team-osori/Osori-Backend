@@ -21,7 +21,7 @@ DB 변경은 Alembic 마이그레이션으로 적용합니다. 이전에 자동 
 
 프로젝트·챗봇 API, 공통 오류, 다른 담당자가 재사용할 소유권 검사와 토큰 처리 규칙은 [API 인계 문서](docs/API_HANDOFF.md)에 정리했습니다.
 
-정책 텍스트·규칙 버전과 사람이 검토·확정하는 테스트셋 기능은 [정책·테스트셋 인계](docs/POLICY_TESTSETS.md)를 참고하세요. 수동 문항 작성·검토·확정과 OpenAI 기반 질문 생성을 지원하며, 실제 생성에는 제공사·키 설정이 필요합니다.
+정책 텍스트·규칙 버전과 사람이 검토·확정하는 테스트셋 기능은 [정책·테스트셋 인계](docs/POLICY_TESTSETS.md)를 참고하세요. 수동 문항 작성·검토·확정과 Bedrock 기반 질문 생성을 지원합니다. 대회 서버의 IAM 역할을 사용하며 설정은 [Bedrock 연동](docs/BEDROCK_SETUP.md)에 있습니다.
 
 기업 챗봇 설정·인증정보 암호화·연결 테스트와 프롬프트 버전 관리는 [연동·프롬프트 인계 문서](docs/CONNECTION_PROMPT_HANDOFF.md)를 참고하세요. 연결 테스트에는 별도 `.venv/bin/python -m app.connection_worker` 실행이 필요합니다. 인증정보 저장 전 `.env`에 `CONNECTION_ENCRYPTION_KEY`를 설정합니다.
 
@@ -29,7 +29,7 @@ DB 변경은 Alembic 마이그레이션으로 적용합니다. 이전에 자동 
 
 GitHub Actions는 PR에서 테스트하고 main 반영 시 테스트 통과 후 팀 서버의 **8000 포트**에 API·워커를 배포합니다. 초기 설정·비밀값·백업·복구 절차는 [배포 문서](docs/DEPLOYMENT.md)에 있습니다.
 
-정책·질문 생성·기대 조건·검토 이력과 B 담당 연동 계약은 [A 기능 인계](docs/QUESTION_GENERATION_HANDOFF.md)를 참고하세요. 실제 질문 생성은 OpenAI 제공사·키 설정 후 사용할 수 있으며 평가 판정 모델은 별도 연결 대상입니다.
+정책·질문 생성·기대 조건·검토 이력과 B 담당 연동 계약은 [A 기능 인계](docs/QUESTION_GENERATION_HANDOFF.md)를 참고하세요. 질문 생성과 평가 판정 모두 Bedrock을 지원하며, 기본 모델은 Claude Haiku 4.5입니다. 서버에서 API와 평가 워커에 동일한 리전·모델 설정을 적용합니다.
 
 ## 인증 API
 

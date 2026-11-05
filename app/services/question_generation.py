@@ -1,4 +1,4 @@
-"""Bounded OpenAI Responses adapter. Secrets and provider bodies never reach API errors."""
+"""Question generation contract and explicit Bedrock/OpenAI provider selection."""
 import asyncio
 import json
 import os
@@ -137,8 +137,13 @@ class OpenAIQuestionGenerator:
 
 
 def get_question_generator() -> QuestionGenerator:
-    """Enable OpenAI explicitly; environment-only key presence never enables paid calls."""
+    """Select an explicit provider, with no automatic fallback to a personal API key."""
     provider = os.getenv('QUESTION_GENERATION_PROVIDER', '').strip().lower()
+    if provider == 'bedrock':
+        from app.services.bedrock_ai import BedrockQuestionGenerator
+        from app.services.bedrock_runtime import DEFAULT_MODEL as BEDROCK_MODEL, configured_region
+        return BedrockQuestionGenerator(os.getenv('QUESTION_GENERATION_MODEL', '').strip() or BEDROCK_MODEL,
+                                        configured_region())
     key = os.getenv('QUESTION_GENERATION_API_KEY', '').strip() or os.getenv('OPENAI_API_KEY', '').strip()
     if provider != 'openai' or not key:
         return UnconfiguredGenerator()

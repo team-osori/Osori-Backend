@@ -17,11 +17,10 @@ from app.models.evaluation import Evaluation, EvaluationItem
 from app.schemas.evaluation import Evidence, Judgement
 from app.services.auth import now
 from app.services.chatbot_gateway import execute_chatbot
-from app.services.evaluation_judge import get_evaluation_judge
+from app.services.evaluation_judge import get_evaluation_judge, JudgeError
 from app.services.evaluations import CRITERION_KEYS, side_names
 from app.services.policy import uid
 from app.services import condition_evaluation
-from app.services.openai_evaluation_judge import JudgeError
 
 LEASE_SECONDS = 600
 JUDGE_TIMEOUT_SECONDS = 30
@@ -125,7 +124,7 @@ async def judge_response(judge, inputs, question, answer, evidence):
     catalog = evidence_catalog(inputs, answer, evidence)
     allowed = {source['evidence_id'] for source in catalog}
     try:
-        async with asyncio.timeout(JUDGE_TIMEOUT_SECONDS):
+        async with asyncio.timeout(getattr(judge, 'timeout_seconds', JUDGE_TIMEOUT_SECONDS)):
             output = await judge.judge(question=deepcopy(question), answer=answer, evidence=deepcopy(evidence),
                 policies=deepcopy(inputs['testSet']['policies']), criteria=deepcopy(inputs['criteria']),
                 evidence_catalog=deepcopy(catalog))

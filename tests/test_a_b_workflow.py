@@ -3,6 +3,8 @@ import asyncio
 import json
 from copy import deepcopy
 
+import pytest
+
 from app import evaluation_worker as worker
 from app.main import app
 from app.models.policy import TestSetVersion as VersionRow
@@ -16,7 +18,8 @@ from test_single_evaluation import single_ready  # noqa: F401
 from test_evaluations import submit
 
 
-def test_generated_a_conditions_flow_through_b_analysis_and_frozen_rerun(single_ready, monkeypatch):
+@pytest.mark.parametrize('provider', ['openai', 'bedrock'])
+def test_generated_a_conditions_flow_through_b_analysis_and_frozen_rerun(single_ready, monkeypatch, provider):
     factory, client, headers, service, old_body, original = single_ready
     project = service.split('/services/')[0]
     with factory() as db:
@@ -33,7 +36,28 @@ def test_generated_a_conditions_flow_through_b_analysis_and_frozen_rerun(single_
                 'expectedBehavior': template['expectedBehavior'], 'forbiddenBehaviors': template['forbiddenBehaviors'],
                 'category': category, 'expectedConditions': conditions, **source} for category in categories]}
 
-    app.dependency_overrides[get_question_generator] = lambda: Generator()
+    phase = ['before']
+    if provider == 'bedrock':
+        from app.services import bedrock_runtime
+        from app.services.bedrock_ai import BedrockQuestionGenerator, BedrockEvaluationJudge
+        class Client:
+            def converse(self, **request):
+                data = json.loads(request['messages'][0]['content'][0]['text'])
+                name = request['toolConfig']['toolChoice']['tool']['name']
+                if name == 'submit_questions':
+                    result = Generator().generate(**data)
+                else:
+                    test_judge = FailingConditionJudge() if phase[0] == 'before' else ConditionJudge()
+                    result = asyncio.run(test_judge.judge(**data))
+                return {'stopReason': 'tool_use', 'output': {'message': {'role': 'assistant',
+                    'content': [{'toolUse': {'name': name, 'input': result}}]}}}
+        monkeypatch.setattr(bedrock_runtime, 'client_for', lambda *args: Client())
+        generator = BedrockQuestionGenerator('test-model', 'ap-northeast-3')
+        judge = BedrockEvaluationJudge('test-model', 'ap-northeast-3')
+    else:
+        generator = Generator()
+        judge = OpenAIEvaluationJudge('test-only-key', 'test-model')
+    app.dependency_overrides[get_question_generator] = lambda: generator
     created = client.post(project + '/testsets', headers=headers,
                           json={'name': 'A/B 통합 검증', 'policyVersionIds': [source['policyVersionId']]})
     version = created.json()['data']['version']
@@ -53,15 +77,13 @@ def test_generated_a_conditions_flow_through_b_analysis_and_frozen_rerun(single_
     assert a_snapshot['schemaVersion'] == 2
     assert {question['category'] for question in a_snapshot['questions']} == {'normal', 'exception', 'boundary'}
 
-    judge = OpenAIEvaluationJudge('test-only-key', 'test-model')
-    phase = ['before']
-
     async def request(body):
         data = json.loads(body['input'][0]['content'])
         test_judge = FailingConditionJudge() if phase[0] == 'before' else ConditionJudge()
         return completed(await test_judge.judge(**data))
 
-    monkeypatch.setattr(judge, '_request', request)
+    if provider == 'openai':
+        monkeypatch.setattr(judge, '_request', request)
     app.dependency_overrides[get_evaluation_judge] = lambda: judge
     path = submit(client, headers, service, {'connectionRevision': 2, 'testSetVersionId': version['id']}, key='b-source')
     asyncio.run(worker.process_one(factory, sender=answer, judge=judge))

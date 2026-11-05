@@ -7,11 +7,12 @@
 `alembic upgrade head`로 `20261105_08`을 적용합니다. 기존 질문에 nullable 검토 시각을 추가하고 `question_history`를 생성합니다. 기존 확정 스냅샷과 평가 결과는 수정하지 않습니다.
 
 ```dotenv
-QUESTION_GENERATION_PROVIDER=openai
-QUESTION_GENERATION_MODEL=gpt-4.1-mini-2025-04-14
+AWS_DEFAULT_REGION=ap-northeast-3
+QUESTION_GENERATION_PROVIDER=bedrock
+QUESTION_GENERATION_MODEL=global.anthropic.claude-haiku-4-5-20251001-v1:0
 ```
 
-키는 Git에서 제외된 환경 파일의 `QUESTION_GENERATION_API_KEY`에 둡니다. 로컬에서는 `OPENAI_API_KEY`도 지원하며 전용 키가 우선합니다. 제공사 설정이 비어 있으면 키가 있어도 호출하지 않습니다. 모델은 환경 변수로 교체할 수 있습니다. 테스트는 provider를 비활성화하고 전송 대역을 사용합니다.
+대회 EC2의 IAM 역할로 인증하며 개인 API 키나 AWS 액세스 키를 입력하지 않습니다. 제공사 설정이 비어 있으면 호출하지 않습니다. 로컬에는 별도의 AWS 사용 권한이 필요합니다. 모델 변경과 배포 설정은 [Bedrock 연동](BEDROCK_SETUP.md)을 참고하세요. 테스트는 외부 호출을 비활성화합니다.
 
 ## 질문 생성
 
@@ -27,12 +28,12 @@ QUESTION_GENERATION_MODEL=gpt-4.1-mini-2025-04-14
 }
 ```
 
-- `categories`는 선택입니다. 생략하면 실제 OpenAI 어댑터는 count=1일 때 normal, 2일 때 normal·exception, 3 이상은 normal·exception·boundary를 포함합니다.
+- `categories`는 선택입니다. 생략하면 Bedrock 어댑터는 count=1일 때 normal, 2일 때 normal·exception, 3 이상은 normal·exception·boundary를 포함합니다.
 - 명시한 유형은 중복 없이 각각 최소 1문항 생성합니다. ambiguous도 선택할 수 있습니다. count는 유형 수 이상, 최대 50입니다.
 - 경계값은 기한·수량·자격 등 정책 적용 경계입니다. 정책에 없는 예외나 숫자는 발명하지 않도록 지시하며, 생성 후 사람이 의미를 검토해야 합니다.
 - 생성된 문항은 항상 pending입니다. 원문에 없는 인용, 잘못된 정책·규칙, 누락된 유형, 중복 질문, 잘못된 조건은 저장하지 않습니다. 실패하면 revision·질문·이력·재사용 레코드가 모두 롤백됩니다.
-- 사용자당 공통 `AUTH_RATE_WINDOW_SECONDS`(기본 60초)당 최대 10회입니다. 실패·재사용 요청도 요청 횟수에 포함합니다. 한 번의 생성은 입력 512KiB, 응답 2MiB, 총 60초로 제한하고 자동 재시도하지 않습니다. 대량 생성이 시간/출력 제한에 걸리면 문항 수를 줄여 새 요청을 보냅니다.
-- 정책 원문을 OpenAI에 전송하며 `store=false`를 설정합니다. 입력 문서 안의 지시를 실행하지 않도록 지시하고 출력은 정책 원문과 다시 대조합니다. 문자열 일치 검사는 의미적 타당성을 보장하지 않습니다.
+- 사용자당 공통 `AUTH_RATE_WINDOW_SECONDS`(기본 60초)당 최대 10회입니다. 실패·재사용 요청도 요청 횟수에 포함합니다. 한 번의 생성은 입력 512KiB, 응답 2MiB, 연결 5초·응답 읽기 55초로 제한하고 자동 재시도하지 않습니다. 대량 생성이 시간/출력 제한에 걸리면 문항 수를 줄여 새 요청을 보냅니다.
+- 정책 원문을 Amazon Bedrock에 전송합니다. 지정한 도구 입력으로 JSON 결과를 받고 서버에서 검증하며 도구를 실행하지 않습니다. 입력 문서 안의 지시를 실행하지 않도록 지시하고 출력은 정책 원문과 다시 대조합니다. 문자열 일치 검사는 의미적 타당성을 보장하지 않습니다.
 
 주요 오류: `GENERATION_NOT_CONFIGURED`(503), `GENERATION_AUTH_FAILED`(503), `GENERATION_RATE_LIMITED`(503), `GENERATION_UNAVAILABLE`(503), `GENERATION_TIMEOUT`(504), `GENERATION_INCOMPLETE`(502), `GENERATION_REFUSED`(502), `INVALID_GENERATION_OUTPUT`(502), `GENERATION_INPUT_TOO_LARGE`(400), 사용자 요청 제한 `RATE_LIMITED`(429, Retry-After).
 
@@ -90,6 +91,6 @@ QUESTION_GENERATION_MODEL=gpt-4.1-mini-2025-04-14
 .venv/bin/python -m pytest -q tests/test_mysql_question_conditions_integration.py
 ```
 
-API 흐름·조건 출처·ID 검증·이력 보존·동시 수정·확정본 불변성·생성 오류/할당량·키 설정 전달을 검증합니다. 실제 모델 호출은 별도 가상 정책 3문항(normal/exception/boundary)으로 확인하며 일반 테스트에서는 외부 API를 호출하지 않습니다.
+API 흐름·조건 출처·ID 검증·이력 보존·동시 수정·확정본 불변성·생성 오류/할당량·IAM 역할 기반 연결 설정 전달을 검증합니다. 실제 모델 호출은 별도 가상 정책 3문항(normal/exception/boundary)으로 확인하며 일반 테스트에서는 외부 API를 호출하지 않습니다.
 
-참고: [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs), [사용 모델](https://developers.openai.com/api/docs/models/gpt-4.1-mini).
+참고: [Bedrock Converse](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-runtime/client/converse.html), [서버 IAM 역할](https://docs.aws.amazon.com/boto3/latest/guide/credentials.html#iam-roles).
