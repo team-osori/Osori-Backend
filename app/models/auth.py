@@ -11,23 +11,10 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     login_id: Mapped[str] = mapped_column(String(30).with_variant(String(30, collation='utf8mb4_bin'), 'mysql'), unique=True, index=True)
-    email: Mapped[str | None] = mapped_column(String(254).with_variant(String(254, collation='utf8mb4_bin'), 'mysql'), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(30))
     password_hash: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
-class EmailVerification(Base):
-    """A short-lived email challenge; the code is stored as a keyed digest."""
-    __tablename__ = 'email_verifications'
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    email: Mapped[str] = mapped_column(String(254))
-    code_hash: Mapped[str] = mapped_column(String(64))
-    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AuthSession(Base):

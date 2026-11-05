@@ -1,4 +1,3 @@
-from email_helpers import verified_post
 """Opt-in tests: OSORI_TEST_MYSQL_URL must point to a disposable MySQL database."""
 import json
 import os
@@ -49,8 +48,8 @@ def signup_and_login(client):
     """Create a distinct test user and obtain credentials for protected API checks."""
     login_id = 'u' + uuid4().hex[:20]
     password = 'integration-password-123'
-    assert verified_post(client, '/api/auth/signup', json={'email': login_id + '@example.com', 'name': 'test', 'password': password}).status_code == 201
-    response = client.post('/api/auth/login', json={'email': login_id + '@example.com', 'password': password})
+    assert client.post('/api/auth/signup', json={'loginId': login_id, 'name': 'test', 'password': password}).status_code == 201
+    response = client.post('/api/auth/login', json={'loginId': login_id, 'password': password})
     assert response.status_code == 200
     return response.json()['data']
 
@@ -329,22 +328,23 @@ def test_mysql_policy_cursor_rejects_extreme_values(mysql_client):
         assert response.status_code == 400 and response.json()['error']['code'] == 'INVALID_CURSOR'
 
 
-def test_mysql_email_code_is_single_use_under_concurrent_signup(mysql_client):
-    """The same verification code can create at most one account across requests."""
-    from email_helpers import captured_codes
-    client, _, _, _ = mysql_client
-    email = 'race-' + uuid4().hex[:20] + '@example.com'
-    issued = client.post('/api/auth/email-verifications', json={'email': email})
-    assert issued.status_code == 202
-    body = {'email': email, 'name': 'Race', 'password': 'integration-password-123',
-        'verificationId': issued.json()['data']['verificationId'], 'verificationCode': captured_codes[email]}
+def test_mysql_concurrent_signup_uses_one_normalized_login_id(mysql_client):
+    """Two differently cased requests must create only one identity."""
+    from app.models.auth import User
+    client, sessions, _, _ = mysql_client
+    login_id = 'race_' + uuid4().hex[:20]
     barrier = Barrier(2)
 
-    def signup():
+    def signup(value):
         barrier.wait(timeout=10)
-        return client.post('/api/auth/signup', json=body).status_code
+        return client.post('/api/auth/signup', json={
+            'loginId': value, 'name': 'Race', 'password': 'integration-password-123'})
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(signup) for _ in range(2)]
-        statuses = [future.result(timeout=30) for future in futures]
-    assert sorted(statuses) == [201, 400]
+        futures = [pool.submit(signup, value) for value in (login_id, login_id.upper())]
+        responses = [future.result(timeout=20) for future in futures]
+    assert sorted(r.status_code for r in responses) == [201, 409], [r.text for r in responses]
+    conflict = next(r for r in responses if r.status_code == 409)
+    assert conflict.json()['error']['code'] == 'LOGIN_ID_ALREADY_EXISTS'
+    with sessions() as db:
+        assert len(db.scalars(select(User).where(User.login_id == login_id)).all()) == 1

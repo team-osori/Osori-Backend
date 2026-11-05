@@ -70,7 +70,7 @@ def test_search_counts_pagination_and_access(db_and_client):
     shared = client.post('/api/projects', headers=other, json={'name': 'Match shared'}).headers['location']
     client.post('/api/projects', headers=other, json={'name': 'Match private'})
     with factory() as db:
-        member = db.scalar(select(User).where(User.email == 'search_owner@example.com'))
+        member = db.scalar(select(User).where(User.login_id == 'search_owner'))
         row = db.get(Project, shared.rsplit('/', 1)[1])
         db.add(ProjectMember(id='m', project_id=row.id, user_id=member.id, invited_by=row.owner_id,
             role='member', status='active', revision=1, created_at=now()))

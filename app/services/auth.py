@@ -35,7 +35,7 @@ def user_data(user: User) -> dict:
     created = user.created_at
     if created.tzinfo is None:
         created = created.replace(tzinfo=UTC)
-    return {'id': user.id, 'email': user.email, 'name': user.name,
+    return {'id': user.id, 'loginId': user.login_id, 'name': user.name,
             'createdAt': created.isoformat().replace('+00:00', 'Z'),
             'lastSeenAt': user.last_seen_at.replace(tzinfo=UTC).isoformat().replace('+00:00', 'Z') if user.last_seen_at else None}
 

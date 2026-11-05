@@ -1,12 +1,12 @@
 from typing import Literal
 
 from pydantic import BaseModel
-from app.schemas.auth import Email
+from app.schemas.auth import LoginId
 from app.schemas.policy import Input, Revision
 
 
 class InvitationCreate(Input):
-    email: Email
+    loginId: LoginId
     role: Literal['admin', 'member'] = 'member'
 
 
@@ -16,11 +16,11 @@ class MemberPatch(Revision):
 
 class MemberOut(BaseModel):
     userId: str
+    loginId: str
     name: str
     role: Literal['admin', 'member']
     status: Literal['owner', 'active', 'invited']
     revision: int
-    email: str | None
     lastSeenAt: str | None
 
 
