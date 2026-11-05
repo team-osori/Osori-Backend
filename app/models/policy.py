@@ -65,6 +65,22 @@ class TestQuestion(Base):
     review_status: Mapped[str] = mapped_column(String(20))
     reviewed_by: Mapped[str | None] = mapped_column(ForeignKey('users.id'))
     review_note: Mapped[str | None] = mapped_column(String(2000))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class QuestionHistory(Base):
+    """Append-only audit events, retained even when a draft question is deleted."""
+    __tablename__ = 'question_history'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    testset_version_id: Mapped[str] = mapped_column(ForeignKey('testset_versions.id'), index=True)
+    question_id: Mapped[str] = mapped_column(String(36), index=True)
+    version_revision: Mapped[int] = mapped_column(Integer)
+    action: Mapped[str] = mapped_column(String(20))
+    actor_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    note: Mapped[str | None] = mapped_column(String(2000))
+    before: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
+    after: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 

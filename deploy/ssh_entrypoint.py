@@ -9,6 +9,8 @@ import sys
 
 def parse_command(command):
     parts = shlex.split(command)
+    if parts == ['configure-question-generation']:
+        return ['--configure-question-generation']
     if (len(parts) != 4 or parts[0] != 'deploy'
             or not re.fullmatch(r'[a-f0-9]{40}', parts[1])
             or not all(re.fullmatch(r'[1-9][0-9]{0,19}', value) for value in parts[2:])):

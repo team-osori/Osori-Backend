@@ -2,6 +2,8 @@ import os
 
 # Tests use an isolated SQLite database, not a developer's MySQL database.
 os.environ['DATABASE_URL'] = 'sqlite://'
+# A developer's ignored .env must never turn the test suite into paid external calls.
+os.environ['QUESTION_GENERATION_PROVIDER'] = ''
 
 import pytest
 from fastapi.testclient import TestClient
