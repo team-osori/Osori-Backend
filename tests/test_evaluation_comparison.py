@@ -49,6 +49,24 @@ def test_new_failure_is_not_hidden_by_other_results(single_ready):
     assert result['outcome'] == 'REGRESSED'
 
 
+def test_rerun_preserves_older_b_snapshot_without_adding_new_condition_defaults(single_ready):
+    source, detail = run_condition(single_ready, ConditionJudge())
+    factory, client, headers, *_ = single_ready
+    with factory() as db:
+        row = db.get(Evaluation, source.rsplit('/', 1)[1])
+        inputs = deepcopy(row.inputs)
+        for condition in inputs['testSet']['questions'][0]['expectedConditions']:
+            for key in ('kind', 'category', 'ruleKeys'):
+                condition.pop(key, None)
+        row.inputs = inputs
+        db.commit()
+    target = rerun(single_ready, source, ConditionJudge())
+    before = client.get(source + '/inputs', headers=headers).json()['data']
+    after = client.get(target + '/inputs', headers=headers).json()['data']
+    assert before['testSet'] == after['testSet']
+    assert client.get(target + '/comparison', headers=headers).status_code == 200
+
+
 def test_comparison_rejects_changed_snapshot_and_foreign_owner(single_ready):
     source, detail = run_condition(single_ready, ConditionJudge())
     target = rerun(single_ready, source, ConditionJudge())
