@@ -44,7 +44,8 @@ def test_condition_judgements_are_linked_to_frozen_policy_and_question(single_re
     factory, client, headers, *_ = single_ready
     inputs = client.get(path + '/inputs', headers=headers).json()['data']
     condition = inputs['testSet']['questions'][0]['expectedConditions'][0]
-    assert condition['id'].startswith('legacy-')
+    assert condition['id']
+    assert condition['kind'] == 'required'
     assert detail['a']['conditionResults'][0]['conditionId'] == condition['id']
     assert detail['a']['criteria']['questionResolution']['score'] == 4
     summary = client.get(path + '/summary', headers=headers).json()['data']
@@ -82,8 +83,8 @@ def test_malformed_condition_output_is_a_judge_error(single_ready, fault):
 
 
 def test_invalid_expected_sources_and_duplicate_ids_are_rejected():
-    snapshot = {'policies': [{'id': 'p', 'content': '정책 원문'}], 'questions': [
-        {'id': 'q', 'expectedBehavior': '기대 행동', 'policyVersionId': 'p', 'evidenceQuote': '정책 원문'}]}
+    snapshot = {'policies': [{'id': 'p', 'content': '정책 원문', 'rules': [{'key': 'r'}]}], 'questions': [
+        {'id': 'q', 'expectedBehavior': '기대 행동', 'policyVersionId': 'p', 'evidenceQuote': '정책 원문', 'ruleKeys': ['r'], 'forbiddenBehaviors': []}]}
     prepared = prepare_questions(snapshot)
     assert 'expectedConditions' not in snapshot['questions'][0]
     duplicate = deepcopy(prepared)
@@ -93,3 +94,33 @@ def test_invalid_expected_sources_and_duplicate_ids_are_rejected():
     prepared['questions'][0]['expectedConditions'][0]['sourceQuote'] = '없는 근거'
     with pytest.raises(ValueError):
         prepare_questions(prepared)
+
+
+def test_a_confirmed_conditions_keep_identifiers_kind_and_source(single_ready):
+    from app.models.policy import TestSetVersion
+    path, detail = run_condition(single_ready, ConditionJudge())
+    factory, client, headers, service, body, original = single_ready
+    with factory() as db:
+        source = deepcopy(db.get(TestSetVersion, body['testSetVersionId']).snapshot)
+    frozen = client.get(path + '/inputs', headers=headers).json()['data']['testSet']
+    before = source['questions'][0]['expectedConditions']
+    after = frozen['questions'][0]['expectedConditions']
+    assert [c['id'] for c in after] == [c['id'] for c in before]
+    assert {c['kind'] for c in after} == {'required', 'forbidden'}
+    assert [c['requirement'] for c in after] == [c['description'] for c in before]
+    assert [c['sourceQuote'] for c in after] == [c['evidenceQuote'] for c in before]
+    assert [c['ruleKeys'] for c in after] == [c['ruleKeys'] for c in before]
+    with factory() as db:
+        assert db.get(TestSetVersion, body['testSetVersionId']).snapshot == source
+
+
+def test_a_display_categories_preserve_diagnostic_conditions():
+    policy = {'id': 'p', 'content': '정책 원문', 'rules': [{'key': 'r'}]}
+    question = {'id': 'q', 'expectedBehavior': '안내', 'forbiddenBehaviors': [],
+                'policyVersionId': 'p', 'ruleKeys': ['r'], 'evidenceQuote': '정책 원문',
+                'expectedConditions': [{'id': category, 'description': '조건 확인', 'kind': 'required',
+                    'category': category, 'policyVersionId': 'p', 'ruleKeys': ['r'], 'evidenceQuote': '정책 원문'}
+                    for category in ('policy', 'response', 'grounding', 'retrieval')]}
+    normalized = prepare_questions({'policies': [policy], 'questions': [question]})['questions'][0]['expectedConditions']
+    assert [c['category'] for c in normalized] == ['policy', 'response', 'grounding', 'retrieval']
+    assert [c['criterion'] for c in normalized] == ['policy', 'questionResolution', 'grounding', 'retrieval']

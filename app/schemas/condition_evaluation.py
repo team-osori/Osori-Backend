@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 from app.schemas.evaluation import CriterionResult
 from app.schemas.policy import Id
 
-AnalysisCriterion = Literal['policy', 'questionResolution', 'communicationQuality']
+AnalysisCriterion = Literal['policy', 'questionResolution', 'communicationQuality', 'retrieval', 'grounding']
 RequiredText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
 
 
@@ -17,6 +17,9 @@ class ExpectedCondition(BaseModel):
     requirement: RequiredText
     policyVersionId: Id
     sourceQuote: Annotated[str, StringConstraints(min_length=1, max_length=10000, pattern=r'\S')]
+    kind: Literal['required', 'forbidden'] = 'required'
+    category: Literal['policy', 'response', 'retrieval', 'grounding', 'communicationQuality'] = 'policy'
+    ruleKeys: Annotated[list[Id], Field(max_length=100)] = []
 
 
 class ConditionResult(CriterionResult):
