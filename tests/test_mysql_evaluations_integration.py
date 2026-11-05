@@ -84,3 +84,44 @@ def test_mysql_crash_preserves_call_intent_and_unstarted_states(mysql_client, mo
     client, factory, _, _ = mysql_client
     headers, service, body, _ = prepare(factory, client, monkeypatch, question_count=2)
     exercise_interrupted_run(factory, client, headers, service, body, phase)
+
+
+def test_mysql_single_evaluation_and_concurrent_human_reviews(mysql_client, monkeypatch):
+    """Only one reviewer can claim a revision; the AI JSON and frozen question remain intact."""
+    from app.main import app
+    from app.models.evaluation import EvaluationReview
+    from app.services.evaluation_judge import get_evaluation_judge
+    from test_evaluation_analysis import FailingConditionJudge
+    client, factory, _, _ = mysql_client
+    headers, service, original, _ = prepare(factory, client, monkeypatch)
+    body = {key: original[key] for key in ('connectionRevision', 'testSetVersionId')}
+    judge = FailingConditionJudge()
+    app.dependency_overrides[get_evaluation_judge] = lambda: judge
+    path = submit(client, headers, service, body)
+    calls = []
+
+    async def sender(*args):
+        calls.append(1)
+        return '기업 답변'
+
+    asyncio.run(worker.process_one(factory, sender=sender, judge=judge))
+    assert len(calls) == 1
+    item = client.get(path + '/items', headers=headers).json()['data']['items'][0]
+    endpoint = path + '/items/' + item['id']
+    before = client.get(endpoint, headers=headers).json()['data']
+    barrier = Barrier(2)
+
+    def review(_):
+        barrier.wait(timeout=10)
+        return client.post(endpoint + '/reviews', headers=headers, json={
+            'expectedRevision': 0, 'conditionId': before['input']['expectedConditions'][0]['id'],
+            'verdict': 'pass', 'reason': '담당자가 원문 확인'})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(review, range(2)))
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    after = client.get(endpoint, headers=headers).json()['data']
+    assert after['a'] == before['a'] and after['input'] == before['input']
+    assert after['resultStatus'] == 'MET' and after['reviewRevision'] == 1
+    with factory() as db:
+        assert len(db.scalars(select(EvaluationReview).where(EvaluationReview.item_id == item['id'])).all()) == 1

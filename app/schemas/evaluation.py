@@ -102,11 +102,12 @@ class EvaluationCreate(BaseModel):
     promptVersionId: Id | None = None
     aPromptVersionId: Id | None = None
     bPromptVersionId: Id | None = None
+    sourceEvaluationId: Id | None = None
 
     @model_validator(mode='after')
     def validate_targets(self):
         if self.resolved_mode == 'COMPARE':
-            if not self.aPromptVersionId or not self.bPromptVersionId or self.promptVersionId:
+            if not self.aPromptVersionId or not self.bPromptVersionId or self.promptVersionId or self.sourceEvaluationId:
                 raise ValueError('비교에는 A/B 프롬프트 두 개를 지정하세요.')
         elif self.aPromptVersionId or self.bPromptVersionId:
             raise ValueError('단일 평가에는 promptVersionId만 선택할 수 있습니다.')
@@ -119,10 +120,17 @@ class EvaluationCreate(BaseModel):
         return 'COMPARE' if self.aPromptVersionId or self.bPromptVersionId else 'SINGLE'
 
 
+class EvaluationRerun(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    connectionRevision: Annotated[int, Field(strict=True, ge=1, le=2**31 - 1)]
+    promptVersionId: Id | None = None
+
+
 class EvaluationResponse(BaseModel):
     id: str
     serviceId: str
     mode: Literal['SINGLE', 'COMPARE'] = 'COMPARE'
+    sourceEvaluationId: str | None = None
     status: Literal['QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED']
     totalQuestions: int
     completedQuestions: int
@@ -177,6 +185,7 @@ class EvaluationInputs(BaseModel):
     comparisonAssurance: dict
     mode: Literal['SINGLE', 'COMPARE'] = 'COMPARE'
     useConfiguredPrompt: bool = False
+    sourceEvaluationId: str | None = None
 
 
 class CriterionCounts(BaseModel):

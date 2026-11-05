@@ -13,13 +13,14 @@ from app.api.policies import Cursor, Limit
 from app.core.errors import ApiError
 from app.models.evaluation import Evaluation, EvaluationItem, EvaluationReview
 from app.schemas.evaluation import (Criterion, EvaluationCreate, EvaluationInputs, EvaluationItemResponse,
-    EvaluationItemSummary, EvaluationResponse, EvaluationSummary)
+    EvaluationItemSummary, EvaluationResponse, EvaluationSummary, EvaluationRerun)
 from app.schemas.responses import Data, Page, ERROR_RESPONSES
 from app.services import evaluations as service
 from app.services import evaluation_analysis as analysis
 from app.schemas.condition_evaluation import IssueKind
 from app.schemas.condition_evaluation import ReviewCreate, ReviewOut
 from app.services.evaluation_reviews import latest_reviews, review_data
+from app.services.evaluation_comparison import compare
 from app.services.auth import now
 from app.services.evaluation_judge import EvaluationJudge, get_evaluation_judge
 from app.services.policy import paginate, uid
@@ -191,3 +192,39 @@ def list_reviews(evaluationId: ResourceId, itemId: ResourceId, service_row: Owne
         EvaluationReview, f'evaluationReviews:{itemId}:revision', limit, cursor,
         versioned=True, sequence=EvaluationReview.revision)
     return {'data': {'items': [review_data(review) for review in rows], 'nextCursor': next_cursor}}
+
+
+@router.post('/{evaluationId}/reruns', status_code=202, response_model=Data[EvaluationResponse])
+def rerun_evaluation(evaluationId: ResourceId, body: EvaluationRerun, service_row: OwnedService,
+                     user: CurrentUser, db: Db, response: Response,
+                     judge: Annotated[EvaluationJudge, Depends(get_evaluation_judge)],
+                     idempotency_key: Annotated[str, Header(alias='Idempotency-Key', min_length=1, max_length=100, pattern=r'^[!-~]+$')]):
+    source = service.get_run(db, service_row.id, evaluationId)
+    prompt_id = body.promptVersionId
+    if 'promptVersionId' not in body.model_fields_set:
+        prompt_id = source.inputs.get('prompts', {}).get('a', {}).get('id')
+    request = EvaluationCreate(mode='SINGLE', connectionRevision=body.connectionRevision,
+        testSetVersionId=source.inputs['testSet']['testSetVersionId'],
+        promptVersionId=prompt_id, sourceEvaluationId=source.id)
+    return create_evaluation(request, service_row, user, db, response, judge, idempotency_key)
+
+
+@router.get('/{evaluationId}/comparison', response_model=Data[dict])
+def compare_evaluations(evaluationId: ResourceId, service_row: OwnedService, db: Db,
+                        baselineEvaluationId: ResourceId | None = None, limit: Limit = 20, cursor: Cursor = None):
+    target = service.get_run(db, service_row.id, evaluationId)
+    baseline_id = baselineEvaluationId or target.inputs.get('sourceEvaluationId')
+    if not baseline_id:
+        raise ApiError(400, 'BASELINE_REQUIRED', '비교할 이전 평가를 선택하세요.')
+    baseline = service.get_run(db, service_row.id, baseline_id)
+    before = db.scalars(select(EvaluationItem).where(EvaluationItem.evaluation_id == baseline.id)).all()
+    after = db.scalars(select(EvaluationItem).where(EvaluationItem.evaluation_id == target.id)).all()
+    reviews = latest_reviews(db, [item.id for item in before + after])
+    result = compare(baseline, target, before, after, reviews)
+    review_hash = hashlib.sha256(json.dumps(sorted((review['id'], review['revision']) for review in reviews.values())).encode()).hexdigest()
+    rows, next_cursor = paginate(db, select(EvaluationItem).where(EvaluationItem.evaluation_id == target.id),
+        EvaluationItem, f'comparison:{baseline.id}:{target.id}:{review_hash}', limit, cursor)
+    by_question = {item['questionId']: item for item in result['items']}
+    result['items'] = [by_question[item.question_id] for item in rows]
+    result['nextCursor'] = next_cursor
+    return {'data': result}

@@ -48,19 +48,31 @@ def build_inputs(db, service, body, judge):
         versions = (('a', get_version(db, service.id, body.promptVersionId)),)
     else:
         versions = ()
-    testset = get_evaluation_snapshot(db, service.project_id, body.testSetVersionId)
+    source = None
+    if body.sourceEvaluationId:
+        source = get_run(db, service.id, body.sourceEvaluationId)
+        if source.status not in TERMINAL or source.inputs.get('mode') != 'SINGLE' or source.inputs['criteria']['version'] != 2:
+            raise ApiError(409, 'INVALID_REEVALUATION_SOURCE', '종료한 단일 평가를 선택하세요.')
+        if source.inputs['testSet']['testSetVersionId'] != body.testSetVersionId:
+            raise ApiError(409, 'COMPARISON_INPUT_MISMATCH', '동일한 질문·기준 스냅샷이 필요합니다.')
+        if source.inputs['connection']['config'] != connection.config or source.inputs['judge'] != judge.descriptor():
+            raise ApiError(409, 'COMPARISON_CONFIGURATION_CHANGED', '연동 설정 또는 판정 모델이 변경되었습니다. 새 평가를 시작하세요.')
+    testset = deepcopy(source.inputs['testSet']) if source else get_evaluation_snapshot(db, service.project_id, body.testSetVersionId)
     if not 1 <= len(testset['questions']) <= 200:
         raise ApiError(409, 'INVALID_TESTSET', '평가 가능한 확정 문항이 필요합니다.')
     criteria = CRITERIA
-    if mode == 'SINGLE' or body.mode == 'COMPARE':
+    if not source and (mode == 'SINGLE' or body.mode == 'COMPARE'):
         try:
             testset = condition_evaluation.prepare_questions(testset)
         except (ValueError, TypeError, KeyError):
             raise ApiError(409, 'INVALID_EXPECTED_CONDITIONS', '기대 조건과 정책 출처를 확인해 주세요.') from None
         criteria = condition_evaluation.CRITERIA
+    if source:
+        criteria = source.inputs['criteria']
     assurance = {'sameQuestion': True, 'sameConnectionConfig': True, 'sameCriteria': True,
                  'promptAppliedVerified': False, 'retrievalInputsControlled': False}
     inputs = {'schemaVersion': 1, 'mode': mode, 'useConfiguredPrompt': not inject_prompt,
+        'sourceEvaluationId': source.id if source else None,
         'connection': {'id': connection.id, 'revision': connection.revision,
         'config': deepcopy(connection.config)},
         'prompts': {side: {'id': version.id, 'promptId': version.prompt_id, 'version': version.version,
@@ -74,6 +86,7 @@ def run_data(row):
     """Expose progress and judge readiness, never encrypted credentials or full inputs."""
     return {'id': row.id, 'serviceId': row.service_id, 'status': row.status,
         'mode': row.inputs.get('mode', 'COMPARE'),
+        'sourceEvaluationId': row.inputs.get('sourceEvaluationId'),
         'totalQuestions': row.total_questions, 'completedQuestions': row.completed_questions,
         'failedQuestions': row.failed_questions, 'judge': row.inputs['judge'],
         'comparisonAssurance': row.inputs['comparisonAssurance'],
