@@ -138,3 +138,11 @@ OSORI_TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/osori_test?ch
 - `lastEvaluatedAt`: 가장 최근 평가 종료 시각(실패 포함), 없으면 null. `promptVersion`: 최신 평가 A측에 명시적으로 선택된 프롬프트 버전 번호, 기업 설정 프롬프트 사용 또는 평가 없음은 null.
 
 최신 항목은 생성 시각·ID로 결정하며 같은 시각의 시험지는 버전 번호를 먼저 비교합니다. 목록에 포함된 소유 프로젝트만 일괄 집계하고 과거 평가 스냅샷·답변·인증정보를 로드하지 않습니다. DB 마이그레이션은 필요 없습니다.
+
+## 프로젝트·서비스 메타데이터 수정 (#20 A 일부)
+
+`PATCH /api/projects/{projectId}`와 `PATCH /api/projects/{projectId}/services/{serviceId}`는 최신 `expectedRevision`과 변경할 `name` 또는 `description`을 받습니다. name은 앞뒤 공백 제거 후 1~50자, description은 최대 2,000자입니다. 생략한 필드는 유지하고 `description: null`은 설명을 삭제합니다. 이름은 null이나 공백일 수 없고, 변경 필드를 하나 이상 보내야 합니다.
+
+성공 시 200과 해당 자원의 최신 응답(revision + 1)을 반환합니다. 이전 revision은 `409 REVISION_CONFLICT`, 다른 소유자·잘못된 부모 경로는 404입니다. 서비스 수정에는 서비스의 revision을 사용하며 연동 설정 revision이나 프로젝트 revision을 변경하지 않습니다.
+
+이 변경은 설정 저장과 이름 변경을 지원합니다. #20의 삭제·30일 휴지통·평가 중단/재개·멤버/역할·추가 분석 데이터는 별도 구현 대상으로 남아 있습니다.

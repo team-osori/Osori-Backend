@@ -5,15 +5,15 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Query, Response
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import and_, exists, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
-from app.api.dependencies import CurrentUser, Db, OwnedProject, ResourceId
+from app.api.dependencies import CurrentUser, Db, OwnedProject, OwnedService, ResourceId
 from app.core.errors import ApiError
 from app.core.cursors import cursor_id, cursor_time, decode_cursor
 from app.models.project import Chatbot, Project
 from app.models.connection import Connection
-from app.schemas.project import ChatbotCreate, ProjectCreate
+from app.schemas.project import ChatbotCreate, ProjectCreate, ChatbotPatch, ProjectPatch
 from app.services.auth import now
 from app.services.project_progress import project_progress
 
@@ -92,6 +92,27 @@ def get_project(project: OwnedProject, db: Db):
     return {'data': project_data(project, int(has), project_progress(db, [project.id])[project.id])}
 
 
+def update_metadata(db, row, body):
+    """Change only supplied metadata with optimistic concurrency protection."""
+    model = type(row)
+    values = body.model_dump(exclude_unset=True, exclude={'expectedRevision'})
+    changed = db.execute(update(model).where(model.id == row.id, model.revision == body.expectedRevision)
+        .values(**values, revision=model.revision + 1, updated_at=now())
+        .execution_options(synchronize_session=False))
+    if changed.rowcount != 1:
+        db.rollback()
+        raise ApiError(409, 'REVISION_CONFLICT', '최신 revision으로 다시 요청해 주세요.')
+    db.commit()
+    db.refresh(row)
+
+
+@router.patch('/{projectId}', response_model=Data[ProjectResponse])
+def update_project(body: ProjectPatch, project: OwnedProject, db: Db):
+    """프로젝트 이름·설명을 수정합니다. 생략한 필드는 유지하며 description=null은 설명을 지웁니다."""
+    update_metadata(db, project, body)
+    return get_project(project, db)
+
+
 @router.post('/{projectId}/services', status_code=201, tags=['services'], response_model=Data[ChatbotResponse])
 def create_chatbot(body: ChatbotCreate, project: OwnedProject, db: Db, response: Response):
     """Register one chatbot, relying on the unique project constraint for concurrent requests."""
@@ -125,5 +146,13 @@ def get_chatbot(serviceId: ResourceId, project: OwnedProject, db: Db):
     service = db.scalar(select(Chatbot).where(Chatbot.id == serviceId, Chatbot.project_id == project.id))
     if service is None:
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '챗봇을 찾을 수 없습니다.')
+    has_connection = bool(db.scalar(select(exists().where(Connection.service_id == service.id))))
+    return {'data': chatbot_data(service, has_connection)}
+
+
+@router.patch('/{projectId}/services/{serviceId}', tags=['services'], response_model=Data[ChatbotResponse])
+def update_chatbot(body: ChatbotPatch, service: OwnedService, db: Db):
+    """챗봇 이름·설명을 수정합니다. expectedRevision은 챗봇 자체의 revision입니다."""
+    update_metadata(db, service, body)
     has_connection = bool(db.scalar(select(exists().where(Connection.service_id == service.id))))
     return {'data': chatbot_data(service, has_connection)}
