@@ -237,7 +237,8 @@ def confirm(testSetId: ResourceId, versionId: ResourceId, body: Revision, projec
     version.status, version.confirmed_by, version.confirmed_at = 'confirmed', user.id, now()
     version.snapshot = {'schemaVersion': 2, 'projectId': project.id, 'testSetId': testSetId,
         'testSetVersionId': version.id, 'version': version.version, 'confirmedBy': user.id,
-        'confirmedAt': service.iso(version.confirmed_at), 'policies': [service.policy_version_data(p) for p in sources],
+        'confirmedAt': service.iso(version.confirmed_at),
+        'policies': service.freeze_policy_titles(db, project.id, [service.policy_version_data(p) for p in sources]),
         'questions': [service.question_data(q) for q in rows]}
     db.commit()
     return {'data': service.version_data(db, version)}

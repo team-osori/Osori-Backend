@@ -64,7 +64,7 @@ def unavailable(question, reason, error=None):
     return results
 
 
-def validate_judgement(output, question, catalog):
+def validate_judgement(output, question, catalog, prompt_context=None):
     """Require complete, source-backed condition decisions before accepting any grades."""
     output = ConditionJudgement.model_validate(output).model_dump()
     conditions = {condition['id']: condition for condition in question['expectedConditions']}
@@ -90,6 +90,8 @@ def validate_judgement(output, question, catalog):
             hypothesis = (decision.get('issue') or {}).get('hypothesis')
             if hypothesis and any(ref['evidence_id'] not in sources for ref in hypothesis['evidenceRefs']):
                 raise ValueError('A cause hypothesis must reference collected evidence')
+            if hypothesis:
+                validate_hypothesis_sources(hypothesis, sources, prompt_context)
     policy_decisions = [decision for decision in decisions if conditions[decision['conditionId']]['criterion'] == 'policy']
     if policy_decisions:
         expected = 'fail' if any(d['verdict'] == 'fail' for d in policy_decisions) else (
@@ -97,3 +99,21 @@ def validate_judgement(output, question, catalog):
         if output['policy']['verdict'] != expected:
             raise ValueError('Policy summary contradicts its condition decisions')
     return output
+
+
+def validate_hypothesis_sources(hypothesis, sources, prompt_context):
+    """Never accept generated text or another side's prompt as a tooltip source."""
+    context = prompt_context or {}
+    quote = hypothesis['promptQuote']
+    if not context.get('available'):
+        hypothesis['promptQuote'] = None
+    elif quote is not None and (hypothesis['area'] != 'PROMPT' or quote not in (context.get('content') or '')):
+        raise ValueError('Prompt quote must be present verbatim in the evaluated prompt')
+    for mark in hypothesis['reasonMarks']:
+        if mark['text'] not in hypothesis['reason']:
+            raise ValueError('Reason mark must be present verbatim in the hypothesis reason')
+        if mark['kind'] == 'prompt':
+            if hypothesis['area'] != 'PROMPT' or mark['evidenceRef'] is not None:
+                raise ValueError('Prompt marks require a PROMPT hypothesis and no catalog reference')
+        elif sources.get(mark['evidenceRef'], {}).get('kind') != mark['kind']:
+            raise ValueError('Reason mark must reference a collected source of the same kind')

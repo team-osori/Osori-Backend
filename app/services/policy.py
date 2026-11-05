@@ -180,6 +180,17 @@ def policy_version_data(row):
             'rules': row.rules, 'sourceDocument': row.source_document, 'createdAt': iso(row.created_at)}
 
 
+def freeze_policy_titles(db, project_id, policies):
+    """Copy display names into a new snapshot; never look them up at detail-read time."""
+    result = deepcopy(policies)
+    missing = {policy['policyId'] for policy in result if 'policyTitle' not in policy and policy.get('policyId')}
+    titles = dict(db.execute(select(Policy.id, Policy.name).where(
+        Policy.project_id == project_id, Policy.id.in_(missing))).all()) if missing else {}
+    for policy in result:
+        policy.setdefault('policyTitle', titles.get(policy.get('policyId')))
+    return result
+
+
 def testset_data(row):
     """Return the test-set identity and revision used when allocating a new draft."""
     return {'id': row.id, 'projectId': row.project_id, 'name': row.name, 'revision': row.revision,

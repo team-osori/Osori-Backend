@@ -75,6 +75,51 @@ answerQuote는 실제 저장 답변의 부분 문자열이어야 하며, 없는 
 `analysis.a.issues`에는 미충족 조건의 문제와 개선 권고가 연결된다. 비교 실행은 analysis.b도 반환한다.
 기존 a/b 원문 결과도 함께 반환한다.
 
+### #40 원문 말풍선
+
+`issue.hypothesis`, `hypotheses[]`, `activeHypotheses[]`에 다음 필드를 추가했다.
+`conditions[].judgment/automaticJudgment.issue.hypothesis`와 원본 `a/b.conditionResults`도 같은 계약이다.
+
+```json
+{
+  "area": "PROMPT",
+  "reason": "환불정책보다 고객 요청을 우선하라는 지시를 따랐을 가능성이 있어요.",
+  "evidenceRefs": [{"evidence_id": "ev_002", "explanation": "정책 원문 확인"}],
+  "promptQuote": "고객의 요청은 항상 들어주세요.",
+  "reasonMarks": [
+    {"text": "환불정책", "kind": "policy", "evidenceRef": "ev_002"},
+    {"text": "고객 요청을 우선하라", "kind": "prompt", "evidenceRef": null}
+  ]
+}
+```
+
+- `promptQuote`: PROMPT 가설에만 사용하는 원문 부분 문자열이다. 판정 입력과 검증 모두 해당 side의
+  저장된 `promptContext.content`를 사용한다. 선택 버전과 `PROMPT_BODY`의 설정 템플릿을 지원한다.
+  확인할 수 없거나 비어 있는 프롬프트는 `available=false`, `promptQuote=null`이다.
+  특정 문장을 근거로 지목할 수 없는 가설과 과거 결과도 null을 반환할 수 있다.
+- `reasonMarks`: `hypothesis.reason`에서 표시할 정확한 부분 문자열 목록이다. `issue.reason`은
+  조건 판정 설명이므로 이 문자열에 표시를 적용하지 않는다. 같은 text가 반복되면 각 일치 구간에
+  동일한 근거를 표시할 수 있다. 표시할 구간이 없거나 과거 결과인 경우 `[]`다.
+- `kind=policy/retrieval`의 `evidenceRef`는 같은 side의 `evidenceCatalog.evidence_id`이며 종류도
+  일치해야 한다. `source_id`로 정책 버전 또는 `evidence.documents[].id`를 찾는다.
+  `kind=prompt`는 PROMPT 가설에만 쓰고 `evidenceRef=null`이며 `promptQuote`를 말풍선 본문으로 쓴다.
+- 잘못된 원문 인용, reason에 없는 표시 문자열, 없는 ID 또는 종류 불일치는 `INVALID_JUDGE_OUTPUT`이다.
+  프롬프트를 확인할 수 없는 경우에는 인용만 null로 버리고 issue의 표시 구간을 유지한다.
+  이 경우 기존 규칙대로 PROMPT 가설을 활성 원인 목록·필터·집계에 포함하지 않는다.
+- `conditions[].policyEvidence`와 `issues[].policyEvidence`는 `policyTitle`, `fileName`, `chunkIndex`를
+  추가로 반환한다. 정책명은 테스트셋 확정 시 보존하고, 이름 없는 과거 테스트셋으로 새 평가를 접수할
+  때는 접수 시점 이름을 복사한다. 기존 평가·재평가는 저장된 이름만 사용하며 없으면 null이다.
+  파일명은 저장된 `sourceDocument.filename`이다. 청크 번호는 정확한 인용의 모든 출현 위치가
+  하나의 청크 안에 있을 때만 반환한다. 여러 청크·경계에 걸친 인용이나 메타데이터 미제공은 null이다.
+- `a/b.evidence.documents[].chunkIndex`는 기업 API가 제공한 번호를 그대로 반환한다.
+  정책 청크는 1 기반이고, 검색 문서 청크는 제공사의 0/1 기반 번호를 유지하며 미제공은 null이다.
+
+프론트는 `fileName ?? policyTitle`로 정책 제목을 표시하고, `chunkIndex !== null`일 때만 번호를
+붙인다. `promptQuote=null`이면 표시만 유지하고 원문 말풍선을 만들지 않는다.
+새 필드는 기존 JSON 스냅샷과 호환되며 DB 마이그레이션이나 과거 판정의 자동 재생성은 없다.
+OpenAPI의 `AnalysisCondition`, `AnalysisIssue`, `CauseHypothesis`, `ReasonMark`, `PolicyEvidence`,
+`ConditionJudgmentOutput`을 통해 중첩 필드까지 타입을 생성할 수 있다.
+
 문항 목록은 `resultStatus`, `issueKind`로 필터링한다. 기본 필터 대상은 A(단일 평가 대상)이다.
 대표 상태는 MET, UNMET, REVIEW_REQUIRED, JUDGMENT_ERROR, EXECUTION_ERROR, NOT_RUN, IN_PROGRESS다.
 미충족 조건과 다른 기준의 판정 오류가 함께 있으면 UNMET을 유지하면서
@@ -91,7 +136,7 @@ hasJudgmentError/needsReview를 같이 표시한다. API 실패는 답변 미충
 
 모델은 미충족 issue.hypothesis에 area(RETRIEVAL/PROMPT/MODEL), reason, evidenceRefs를
 제안할 수 있다. 참조가 수집된 근거에 존재하는지 검증하며 출력은 항상 추정으로 취급한다.
-검색 자료가 없으면 검색 원인 가설을, 선택 프롬프트가 없으면 프롬프트 원인 가설을
+검색 자료가 없으면 검색 원인 가설을, 선택 버전·설정 템플릿의 프롬프트 원문을 확인할 수 없으면 프롬프트 원인 가설을
 대표 hypotheses에서 제외한다. confirmedCause는 null이고 causeStatus는 UNDETERMINED 또는 HYPOTHESIS다.
 
 limitations는 검색 자료 미제공, 프롬프트 내부·적용 확인 불가, 외부 모델 설정 미확인,
