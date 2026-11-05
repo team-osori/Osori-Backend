@@ -119,6 +119,9 @@ def reviewed_side(question, side, reviews=(), overall=None, *, expected_criteria
                     and base_screen_status in ('CORRECT', 'INCORRECT')):
         detail['screenStatus'] = 'REVIEW_REQUIRED'
         detail['needsReview'] = True
+    elif overall and overall['verdict'] in ('pass', 'fail') and base_screen_status not in ('CORRECT', 'INCORRECT'):
+        detail['screenStatus'] = 'CORRECT' if overall['verdict'] == 'pass' else 'INCORRECT'
+        detail['needsReview'] = False
     return {**detail, 'answerReview': overall, 'reviewConflict': conflict, 'derivedScreenStatus': base_screen_status}
 
 

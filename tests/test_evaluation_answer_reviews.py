@@ -50,7 +50,7 @@ def test_whole_answer_ox_preserves_conditions_and_surfaces_conflicts(single_read
     assert len(older) == 1 and older[0]['revision'] == 1
 
 
-def test_answer_review_cannot_grade_execution_failure_or_override_judge_error(single_ready):
+def test_answer_review_can_resolve_judge_error_for_grading_and_wrong_notes(single_ready):
     path, detail = run_condition(single_ready, ConditionJudge())
     factory, client, headers, *_ = single_ready
     endpoint = path + '/items/' + detail['id']
@@ -63,12 +63,20 @@ def test_answer_review_cannot_grade_execution_failure_or_override_judge_error(si
         item.a = value
         db.commit()
     assert client.post(endpoint + '/answer-reviews', headers=headers, json=body).status_code == 201
-    assert client.get(endpoint, headers=headers).json()['data']['screenStatus'] == 'JUDGMENT_ERROR'
+    detail = client.get(endpoint, headers=headers).json()['data']
+    assert detail['screenStatus'] == 'CORRECT'
+    assert detail['analysis']['a']['derivedScreenStatus'] == 'JUDGMENT_ERROR'
+    wrong = client.get(path + '/items', headers=headers, params={'screenStatus': 'INCORRECT'}).json()['data']['items']
+    assert wrong == []
+    assert client.post(endpoint + '/answer-reviews', headers=headers,
+                       json={**body, 'expectedRevision': 1, 'verdict': 'fail'}).status_code == 201
+    wrong = client.get(path + '/items', headers=headers, params={'screenStatus': 'INCORRECT'}).json()['data']['items']
+    assert [item['id'] for item in wrong] == [detail['id']]
     with factory() as db:
         item = db.get(EvaluationItem, detail['id'])
         item.a = {**item.a, 'callStatus': 'FAILED'}
         db.commit()
-    response = client.post(endpoint + '/answer-reviews', headers=headers, json={**body, 'expectedRevision': 1})
+    response = client.post(endpoint + '/answer-reviews', headers=headers, json={**body, 'expectedRevision': 2})
     assert response.status_code == 409 and response.json()['error']['code'] == 'ANSWER_UNAVAILABLE'
 
 
