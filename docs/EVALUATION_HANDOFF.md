@@ -100,15 +100,27 @@ Content-Type: application/json
 
 ## 상태와 실패
 
-실행은 `QUEUED → RUNNING → COMPLETED | PARTIAL_FAILED | FAILED`로 진행합니다. `completedQuestions`는 처리가 끝난 문항 수이며 실패 문항도 포함합니다. `failedQuestions`는 A/B 중 하나라도 기업 API 호출에 실패한 문항 수입니다.
+실행은 `QUEUED → RUNNING → COMPLETED | PARTIAL_FAILED | FAILED`로 진행합니다. `completedQuestions`는 처리가 끝난 문항 수이며 실패·중단·미실행으로 종료한 문항도 포함합니다. `failedQuestions`는 그중 정상 완료되지 못한 문항 수입니다. 기업 API 호출 실패 건수는 summary의 `callFailed`로 확인하며 작업 중단·미호출과 구분합니다.
 
 - `COMPLETED`: 모든 문항의 A/B 호출·처리가 끝났습니다. 정책을 모두 통과했다거나 AI 판정이 모두 가능하다는 의미는 아닙니다.
-- `PARTIAL_FAILED`: 일부 호출에 실패했고, 저장된 성공 답변도 있습니다.
-- `FAILED`: 모든 호출에 실패하거나 실행 설정을 사용할 수 없습니다.
+- `PARTIAL_FAILED`: 호출 실패·중단·미실행으로 끝난 문항과 저장된 성공 답변이 함께 있습니다.
+- `FAILED`: 실패·중단·미실행으로 끝났으며 저장된 성공 답변이 없습니다. 실행 설정을 사용할 수 없는 경우도 포함합니다.
 - 문항의 A/B에는 각각 `callStatus`, `answer`, `evidence`, `evidenceCatalog`, `latencyMs`, `attemptCount`, `error`, `judgeError`, `criteria`가 저장됩니다. A 호출 실패여도 B와 다음 문항은 계속 실행합니다.
-- AI 호출·출력 검증 실패는 `judgeError`와 기준별 `status=error`, `verdict=null`로 표시하고 성공한 기업 답변은 보존합니다.
+- AI 호출·출력 검증 실패는 `judgeError`와 네 기준의 `status=error`, `verdict=null`로 표시하고 성공한 기업 답변은 보존합니다. 검색 문서가 없더라도 모델 오류를 판정 불가로 덮어쓰지 않습니다. 모델이 유효한 결과를 반환한 경우에만 검색 자료 미제공을 not_evaluable로 처리하며 기준 자체의 error 결과도 보존합니다.
 
-DB 큐는 프로세스 재시작 후에도 유지합니다. 여러 워커가 실행을 중복 수행하지 않도록 원자적으로 선점하고 쓰기 전에 lease를 검사합니다. RUNNING에서 heartbeat가 10분 동안 갱신되지 않으면 `WORKER_INTERRUPTED`로 종료하며 이미 저장된 A/B 결과는 보존합니다. 실제 외부 호출이 완료됐는지 모르는 작업은 자동으로 재전송하지 않습니다. 사용자가 새 요청 키로 다시 실행할 수 있습니다. SIGTERM/SIGINT를 받으면 현재 문항 처리를 마치고 나머지 문항은 `WORKER_STOPPED`로 종료합니다.
+DB 큐는 프로세스 재시작 후에도 유지합니다. 여러 워커가 실행을 중복 수행하지 않도록 원자적으로 선점하고 쓰기 전에 lease를 검사합니다. RUNNING에서 heartbeat가 10분 동안 갱신되지 않으면 `WORKER_INTERRUPTED`로 종료하며 이미 저장된 A/B 결과는 보존합니다. A 호출을 시작하기 전에 A=RUNNING·B=NOT_RUN을 함께 저장하고, B도 호출 전에 RUNNING을 저장합니다. 복구 시 QUEUED 문항과 명시적인 NOT_RUN 쪽은 미호출로, RUNNING 쪽은 결과 불명인 INTERRUPTED로 처리합니다. 호출 시작 기록이 없는 이전 구현의 RUNNING 결과는 보수적으로 INTERRUPTED로 구분합니다. 실제 외부 호출이 완료됐는지 모르는 작업은 자동으로 재전송하지 않습니다. 사용자가 새 요청 키로 다시 실행할 수 있습니다. SIGTERM/SIGINT를 받으면 현재 문항 처리를 마치고 나머지 문항은 `WORKER_STOPPED`로 종료합니다.
+
+문항 상태는 `QUEUED`, `RUNNING`, `COMPLETED`, `FAILED`, `NOT_RUN`, `INTERRUPTED`입니다. NOT_RUN은 양쪽 모두 미호출인 채 종료한 문항, INTERRUPTED는 일부만 끝났거나 결과를 확인할 수 없는 문항입니다. A/B의 `callStatus`는 아래처럼 구분합니다.
+
+| callStatus | 의미 | summary 집계 |
+| --- | --- | --- |
+| NOT_RUN | 호출하지 않음(작업 중단 이유는 error로 확인) | notRun |
+| RUNNING | 호출 또는 판정 처리 중 | inProgress |
+| SUCCEEDED | 답변 저장 완료 | 기준별 pass·fail·notEvaluable·judgeFailed |
+| FAILED | 호출·응답 처리 실패가 확인됨 | callFailed |
+| INTERRUPTED | 처리 도중 중단되어 결과를 확인할 수 없음 | callInterrupted |
+
+RUNNING·INTERRUPTED의 `attemptCount`, `latencyMs`는 미확정이므로 null입니다. NOT_RUN은 각각 0이며 기업 API 오류로 집계하지 않습니다. 이미 저장된 A/B 성공·실패 결과는 복구 시 그대로 보존합니다.
 
 기업 API 재시도는 기존 연결 설정의 `retrySafe=true`와 `maxRetries`에 따릅니다. API 내부 세션·쿠키는 A/B 사이에 공유하지 않습니다. 평가 시점의 인증정보는 암호화된 비공개 실행 필드에 임시 보존하고, 종료 시 지웁니다. API 응답·입력 조회로 암호문이나 평문을 노출하지 않습니다. 대기 중 인증정보를 변경해도 제출 당시 값을 사용합니다. 암호화 키를 바꾸거나 모델 어댑터 설정이 제출 시점과 달라지면 `EXECUTION_CONFIG_UNAVAILABLE`로 종료합니다.
 
@@ -157,7 +169,7 @@ DB 큐는 프로세스 재시작 후에도 유지합니다. 여러 워커가 실
 
 ## 통과율과 비교
 
-`통과율 = pass / (pass + fail) × 100`으로 계산하고 소수 둘째 자리까지 표시합니다. status가 not_evaluable·error인 판정, 기업 호출 실패, 아직 실행하지 않은 문항은 분모에서 제외하며 각각 `notEvaluable`, `judgeFailed`, `callFailed`, `notRun`으로 제공합니다. 분모가 0이면 `passRate: null`입니다. 기준들을 임의로 합친 종합 점수는 만들지 않습니다. 진행 중 summary는 `provisional: true`입니다.
+`통과율 = pass / (pass + fail) × 100`으로 계산하고 소수 둘째 자리까지 표시합니다. status가 not_evaluable·error인 판정, 확인된 호출 실패, 결과 불명 중단, 처리 중, 미호출은 분모에서 제외하며 각각 `notEvaluable`, `judgeFailed`, `callFailed`, `callInterrupted`, `inProgress`, `notRun`으로 제공합니다. 분모가 0이면 `passRate: null`입니다. 기준들을 임의로 합친 종합 점수는 만들지 않습니다. 진행 중 summary는 `provisional: true`입니다.
 
 A/B 비교는 **같은 문항·같은 기준에서 양쪽 모두 status=judged이며 verdict가 pass/fail인 경우**만 사용합니다.
 

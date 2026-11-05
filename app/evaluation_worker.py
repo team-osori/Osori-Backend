@@ -38,16 +38,39 @@ def failed_side(code, message, question_id):
             'judgeError': None, 'criteria': ungraded('호출 또는 실행 실패', question_id)}
 
 
+def pending_side(status, question_id, error=None):
+    """Distinguish unstarted, active and uncertain calls from confirmed transport failures."""
+    reason = {'NOT_RUN': '기업 챗봇 미호출', 'RUNNING': '기업 챗봇 호출·판정 처리 중',
+              'INTERRUPTED': '호출 결과를 저장하기 전에 작업이 중단되어 결과를 확인할 수 없음'}[status]
+    return {'callStatus': status, 'answer': None, 'evidence': Evidence().model_dump(), 'evidenceCatalog': [],
+            'latencyMs': 0 if status == 'NOT_RUN' else None, 'attemptCount': 0 if status == 'NOT_RUN' else None,
+            'error': deepcopy(error), 'judgeError': None, 'criteria': ungraded(reason, question_id)}
+
+
 def close_interrupted(db, run, code='WORKER_INTERRUPTED'):
     """End uncertain work without replaying external calls; preserve every already saved side."""
     items = db.scalars(select(EvaluationItem).where(EvaluationItem.evaluation_id == run.id).with_for_update()).all()
     for item in items:
         if item.status in ('QUEUED', 'RUNNING'):
-            if item.a is None:
-                item.a = failed_side(code, '작업 실행이 중단되어 결과를 확인할 수 없습니다.', item.question_id)
-            if item.b is None:
-                item.b = failed_side(code, '작업 실행이 중단되어 결과를 확인할 수 없습니다.', item.question_id)
-            item.status = 'FAILED'
+            error = {'code': code, 'message': '작업 실행이 중단되었습니다.'}
+            for name in ('a', 'b'):
+                side = getattr(item, name)
+                # Missing results on legacy RUNNING rows may follow an actual call.
+                if side is None:
+                    status = 'NOT_RUN' if item.status == 'QUEUED' else 'INTERRUPTED'
+                elif side['callStatus'] in ('NOT_RUN', 'RUNNING'):
+                    status = 'NOT_RUN' if side['callStatus'] == 'NOT_RUN' else 'INTERRUPTED'
+                else:
+                    continue  # Preserve already persisted successes and failures.
+                setattr(item, name, pending_side(status, item.question_id, error))
+            if all(side['callStatus'] == 'SUCCEEDED' for side in (item.a, item.b)):
+                item.status = 'COMPLETED'
+            elif all(side['callStatus'] == 'NOT_RUN' for side in (item.a, item.b)):
+                item.status = 'NOT_RUN'
+            elif any(side['callStatus'] == 'FAILED' for side in (item.a, item.b)):
+                item.status = 'FAILED'
+            else:
+                item.status = 'INTERRUPTED'
     db.flush()
     finish(db, run, items)
 
@@ -55,8 +78,9 @@ def close_interrupted(db, run, code='WORKER_INTERRUPTED'):
 def finish(db, run, items=None):
     """Finalize execution status separately from whether an AI judge supplied grades."""
     items = items if items is not None else db.scalars(select(EvaluationItem).where(EvaluationItem.evaluation_id == run.id)).all()
-    run.completed_questions = sum(item.status in ('COMPLETED', 'FAILED') for item in items)
-    run.failed_questions = sum(item.status == 'FAILED' for item in items)
+    closed = ('COMPLETED', 'FAILED', 'NOT_RUN', 'INTERRUPTED')
+    run.completed_questions = sum(item.status in closed for item in items)
+    run.failed_questions = sum(item.status in closed and item.status != 'COMPLETED' for item in items)
     any_success = any(side and side['callStatus'] == 'SUCCEEDED' for item in items for side in (item.a, item.b))
     run.status = ('PARTIAL_FAILED' if any_success else 'FAILED') if run.failed_questions else 'COMPLETED'
     run.finished_at = now()
@@ -106,10 +130,11 @@ async def judge_response(judge, inputs, question, answer, evidence):
     except Exception:
         error = {'code': 'INVALID_JUDGE_OUTPUT', 'message': '유효한 평가 판정을 받지 못했습니다.'}
         output = ungraded('평가 모델 오류 또는 잘못된 판정 근거', question['id'], error)
-    if evidence.get('documents') is None:
+    if error is None and evidence.get('documents') is None:
         for key in ('retrieval', 'grounding'):
-            output[key] = ungraded('기업 API의 검색 근거 자료 미제공', question['id'])[key]
-    if inputs['judge']['adapter'] == 'unconfigured':
+            if output[key]['status'] != 'error':
+                output[key] = ungraded('기업 API의 검색 근거 자료 미제공', question['id'])[key]
+    if error is None and inputs['judge']['adapter'] == 'unconfigured':
         error = {'code': 'JUDGE_NOT_CONFIGURED', 'message': '평가 모델이 아직 연결되지 않았습니다.'}
     return output, error
 
@@ -187,10 +212,22 @@ async def process_one(factory=SessionLocal, *, sender=None, judge=None, stop_eve
                 return True
             item = db.get(EvaluationItem, item_id)
             item.status = 'RUNNING'
+            # Persist intent before A; B is explicitly known to be unstarted.
+            item.a = pending_side('RUNNING', item.question_id)
+            item.b = pending_side('NOT_RUN', item.question_id)
             question = deepcopy(item.input)
             row.heartbeat_at = now()
             db.commit()
         for side in ('a', 'b'):
+            if side == 'b':
+                with factory() as db:
+                    row = locked_run(db, id_, token)
+                    if row is None:
+                        return True
+                    item = db.get(EvaluationItem, item_id)
+                    item.b = pending_side('RUNNING', item.question_id)
+                    row.heartbeat_at = now()
+                    db.commit()
             outcome = await execute_side(inputs, question, side, secret, judge, sender)
             with factory() as db:
                 row = locked_run(db, id_, token)

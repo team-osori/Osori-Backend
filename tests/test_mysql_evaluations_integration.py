@@ -6,11 +6,12 @@ import subprocess
 import sys
 from threading import Barrier
 
+import pytest
 from sqlalchemy import select
 
 from app import evaluation_worker as worker
 from app.models.evaluation import Evaluation, EvaluationItem
-from test_evaluations import prepare, submit
+from test_evaluations import exercise_interrupted_run, prepare, submit
 from test_mysql_auth_integration import mysql_client  # noqa: F401 - shared fixture
 
 
@@ -75,3 +76,11 @@ print(json.dumps({'worked': asyncio.run(process_one(sender=sender))}))
     assert client.get(path, headers=headers).json()['data']['status'] == 'COMPLETED'
     item = client.get(path + '/items', headers=headers).json()['data']['items'][0]
     assert client.get(path + '/items/' + item['id'], headers=headers).json()['data']['b']['answer'] == '재시작 이후 기업 답변'
+
+
+@pytest.mark.parametrize('phase', ['a', 'b'])
+def test_mysql_crash_preserves_call_intent_and_unstarted_states(mysql_client, monkeypatch, phase):
+    """Round-trip call intent and recovery states through real MySQL JSON columns."""
+    client, factory, _, _ = mysql_client
+    headers, service, body, _ = prepare(factory, client, monkeypatch, question_count=2)
+    exercise_interrupted_run(factory, client, headers, service, body, phase)

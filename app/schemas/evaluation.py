@@ -119,19 +119,19 @@ class EvaluationItemSummary(BaseModel):
     id: str
     questionId: str
     question: str
-    status: Literal['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED']
-    aCallStatus: Literal['NOT_RUN', 'SUCCEEDED', 'FAILED']
-    bCallStatus: Literal['NOT_RUN', 'SUCCEEDED', 'FAILED']
+    status: Literal['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'NOT_RUN', 'INTERRUPTED']
+    aCallStatus: Literal['NOT_RUN', 'RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED']
+    bCallStatus: Literal['NOT_RUN', 'RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED']
     changes: dict[str, str]
 
 
 class EvaluationSide(BaseModel):
-    callStatus: Literal['SUCCEEDED', 'FAILED']
+    callStatus: Literal['NOT_RUN', 'RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED']
     answer: str | None
     evidence: Evidence
     evidenceCatalog: list[EvidenceSource]
-    latencyMs: int
-    attemptCount: int
+    latencyMs: int | None
+    attemptCount: int | None
     error: ExecutionError | None
     judgeError: ExecutionError | None
     criteria: Judgement
@@ -159,6 +159,8 @@ class CriterionCounts(BaseModel):
     notEvaluable: int
     judgeFailed: int
     callFailed: int
+    callInterrupted: int
+    inProgress: int
     notRun: int
     denominator: int
     passRate: float | None

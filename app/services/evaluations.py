@@ -89,11 +89,16 @@ def aggregate(run, rows):
     for key in CRITERION_KEYS:
         entry = {}
         for side_name in ('a', 'b'):
-            counts = {'pass': 0, 'fail': 0, 'notEvaluable': 0, 'judgeFailed': 0, 'callFailed': 0, 'notRun': 0}
+            counts = {'pass': 0, 'fail': 0, 'notEvaluable': 0, 'judgeFailed': 0,
+                      'callFailed': 0, 'callInterrupted': 0, 'inProgress': 0, 'notRun': 0}
             for row in rows:
                 side = getattr(row, side_name)
-                if side is None:
+                if side is None or side['callStatus'] == 'NOT_RUN':
                     counts['notRun'] += 1
+                elif side['callStatus'] == 'RUNNING':
+                    counts['inProgress'] += 1
+                elif side['callStatus'] == 'INTERRUPTED':
+                    counts['callInterrupted'] += 1
                 elif side['callStatus'] == 'FAILED':
                     counts['callFailed'] += 1
                 elif side['criteria'][key]['status'] == 'error':

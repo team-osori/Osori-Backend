@@ -235,6 +235,8 @@ def test_lease_expiry_preserves_saved_side_and_never_replays(ready):
         item = db.scalar(select(EvaluationItem))
         assert item.a['answer'] == '保存済み'
         assert item.b['error']['code'] == 'WORKER_INTERRUPTED'
+        assert item.b['callStatus'] == 'INTERRUPTED'
+        assert item.b['attemptCount'] is None
         assert worker.locked_run(db, item.evaluation_id, 'old-lease') is None
         assert db.scalar(select(Evaluation)).secret_ciphertext is None
 
@@ -256,6 +258,9 @@ def test_draft_rejected_judge_change_and_idempotency_expiry(ready):
     assert submit(client, headers, service, body) == path  # queued keys do not expire
     asyncio.run(worker.process_one(factory, judge=TestJudge(), sender=plain_answer))
     assert client.get(path, headers=headers).json()['data']['status'] == 'FAILED'
+    summary = client.get(path + '/summary', headers=headers).json()['data']
+    assert summary['criteria']['policy']['a']['notRun'] == 1
+    assert summary['criteria']['policy']['a']['callFailed'] == 0
     assert submit(client, headers, service, body) != path
     listing = client.get(service + '/evaluations', headers=headers, params={'limit': 1}).json()['data']
     assert listing['nextCursor']
@@ -264,7 +269,8 @@ def test_draft_rejected_judge_change_and_idempotency_expiry(ready):
 
 
 @pytest.mark.parametrize('mode', ['missing-evidence', 'unknown-evidence', 'wrong-question', 'invalid-state', 'timeout', 'exception'])
-def test_judge_invalid_output_is_never_counted_as_a_pass(mode, monkeypatch):
+@pytest.mark.parametrize('documents', [None, []])
+def test_judge_invalid_output_is_never_counted_as_a_pass(mode, documents, monkeypatch):
     """Keep invalid identities, references, state combinations and timeouts out of scores."""
     class Broken(TestJudge):
         async def judge(self, **kwargs):
@@ -287,7 +293,7 @@ def test_judge_invalid_output_is_never_counted_as_a_pass(mode, monkeypatch):
     monkeypatch.setattr(worker, 'JUDGE_TIMEOUT_SECONDS', 0.01)
     inputs = {'judge': Broken().descriptor(), 'criteria': CRITERIA,
               'testSet': {'policies': [{'id': 'p-1', 'content': '출발 24시간 전까지'}]}}
-    result, error = asyncio.run(worker.judge_response(Broken(), inputs, {'id': 'q_001'}, 'B: result', {'documents': []}))
+    result, error = asyncio.run(worker.judge_response(Broken(), inputs, {'id': 'q_001'}, 'B: result', {'documents': documents}))
     assert all(r['status'] == 'error' and r['verdict'] is None for r in result.values())
     assert error['code'] == ('JUDGE_TIMEOUT' if mode == 'timeout' else 'INVALID_JUDGE_OUTPUT')
     assert 'private-token' not in str(error)
@@ -354,9 +360,15 @@ def test_shutdown_finishes_current_question_and_marks_remaining(db_and_client, m
     assert data['completedQuestions'] == 2 and data['failedQuestions'] == 1
     with factory() as db:
         items = db.scalars(select(EvaluationItem)).all()
-        stopped = next(item for item in items if item.status == 'FAILED')
+        stopped = next(item for item in items if item.status == 'NOT_RUN')
+        assert stopped.a['callStatus'] == stopped.b['callStatus'] == 'NOT_RUN'
         assert stopped.a['error']['code'] == 'WORKER_STOPPED'
         assert stopped.b['error']['code'] == 'WORKER_STOPPED'
+    summary = client.get(path + '/summary', headers=headers).json()['data']
+    for criterion in summary['criteria'].values():
+        for side in ('a', 'b'):
+            assert criterion[side]['notRun'] == 1
+            assert criterion[side]['callFailed'] == 0
 
 
 def test_question_failure_does_not_stop_later_questions(db_and_client, monkeypatch):
@@ -440,3 +452,153 @@ def test_retrieval_pointer_configuration_is_validated_before_execution(ready):
     assert data['revision'] == 3 and data['verifiedRevision'] is None
     assert data['retrievalPointer'] == '/retrieval/documents'
     assert client.get(service + '/connection', headers=headers).json()['data']['citationsPointer'] == '/citations'
+
+
+@pytest.mark.parametrize('failure', ['model_error', 'criterion_error'])
+def test_missing_documents_never_hide_judge_errors_in_summary(ready, failure):
+    """Preserve global and criterion-level model errors when retrieval telemetry is absent."""
+    factory, client, headers, service, body, _ = ready
+    class ErrorJudge(TestJudge):
+        async def judge(self, **kwargs):
+            """Fail the whole model or only the two retrieval-related criteria."""
+            if failure == 'model_error':
+                raise ValueError('private-provider-error')
+            result = await super().judge(**kwargs)
+            for key in ('retrieval', 'grounding'):
+                result[key] = {'question_id': kwargs['question']['id'], 'status': 'error', 'verdict': None,
+                    'reason': '판정 제공사 오류', 'evidence_refs': [],
+                    'error': {'code': 'PROVIDER_ERROR', 'message': '판정 실패'}}
+            return result
+    judge = ErrorJudge()
+    app.dependency_overrides[get_evaluation_judge] = lambda: judge
+    path = submit(client, headers, service, body)
+    asyncio.run(worker.process_one(factory, sender=plain_answer, judge=judge))
+    summary = client.get(path + '/summary', headers=headers).json()['data']
+    keys = CRITERIA['definitions'] if failure == 'model_error' else ('retrieval', 'grounding')
+    for key in keys:
+        for side in ('a', 'b'):
+            counts = summary['criteria'][key][side]
+            assert counts['judgeFailed'] == 1 and counts['notEvaluable'] == 0
+            assert counts['denominator'] == 0 and counts['passRate'] is None
+    item = client.get(path + '/items', headers=headers).json()['data']['items'][0]
+    detail = client.get(path + '/items/' + item['id'], headers=headers).json()['data']
+    for side in ('a', 'b'):
+        assert detail[side]['callStatus'] == 'SUCCEEDED'
+        assert all(detail[side]['criteria'][key]['status'] == 'error' for key in keys)
+        if failure == 'model_error':
+            assert detail[side]['judgeError']['code'] == 'INVALID_JUDGE_OUTPUT'
+        else:
+            assert detail[side]['judgeError'] is None
+
+
+def exercise_interrupted_run(factory, client, headers, service, body, phase):
+    """Crash during A or B and verify durable intent, recovery, API schemas and exact counts."""
+    path = submit(client, headers, service, body)
+    class SimulatedCrash(BaseException):
+        """Bypass application exception handling just as abrupt process termination would."""
+    calls = []
+    async def sender(config, payload, outgoing):
+        """Inspect persisted in-flight state, then crash before a response can be saved."""
+        side = 'a' if payload['messages'][0]['content'] == 'A prompt' else 'b'
+        calls.append(side)
+        if side == phase:
+            summary = client.get(path + '/summary', headers=headers).json()['data']
+            for counts in summary['criteria'].values():
+                assert counts[side]['inProgress'] == 1 and counts[side]['notRun'] == 1
+                assert counts[side]['callFailed'] == counts[side]['callInterrupted'] == 0
+            running = next(item for item in client.get(path + '/items', headers=headers).json()['data']['items'] if item['status'] == 'RUNNING')
+            detail = client.get(path + '/items/' + running['id'], headers=headers)
+            assert detail.status_code == 200
+            assert detail.json()['data'][side]['callStatus'] == 'RUNNING'
+            raise SimulatedCrash()
+        return '완료한 기업 답변'
+    with pytest.raises(SimulatedCrash):
+        asyncio.run(worker.process_one(factory, sender=sender))
+    assert calls == (['a'] if phase == 'a' else ['a', 'b'])
+    with factory() as db:
+        row = db.get(Evaluation, path.rsplit('/', 1)[1])
+        row.heartbeat_at = now() - timedelta(seconds=worker.LEASE_SECONDS + 1)
+        db.commit()
+    worker.expire_abandoned(factory)
+    summary = client.get(path + '/summary', headers=headers).json()['data']
+    assert summary['evaluation']['completedQuestions'] == 2
+    assert summary['evaluation']['status'] == ('FAILED' if phase == 'a' else 'PARTIAL_FAILED')
+    for counts in summary['criteria'].values():
+        assert counts[phase]['callInterrupted'] == 1
+        assert counts['a']['notRun'] == 1
+        assert counts['b']['notRun'] == (2 if phase == 'a' else 1)
+        for side in ('a', 'b'):
+            assert counts[side]['callFailed'] == counts[side]['inProgress'] == 0
+            assert counts[side]['denominator'] == 0
+            assert sum(counts[side][key] for key in ('pass', 'fail', 'notEvaluable', 'judgeFailed',
+                'callFailed', 'callInterrupted', 'inProgress', 'notRun')) == 2
+    items = client.get(path + '/items', headers=headers).json()['data']['items']
+    assert sorted(item['status'] for item in items) == ['INTERRUPTED', 'NOT_RUN']
+    interrupted = next(item for item in items if item['status'] == 'INTERRUPTED')
+    detail = client.get(path + '/items/' + interrupted['id'], headers=headers).json()['data']
+    assert detail[phase]['callStatus'] == 'INTERRUPTED'
+    assert detail[phase]['attemptCount'] is None and detail[phase]['latencyMs'] is None
+    assert detail[phase]['error']['code'] == 'WORKER_INTERRUPTED'
+    assert detail['b']['callStatus'] == ('NOT_RUN' if phase == 'a' else 'INTERRUPTED')
+    with factory() as db:
+        assert db.get(Evaluation, path.rsplit('/', 1)[1]).secret_ciphertext is None
+    async def forbidden(*args):
+        """Reject any retry of uncertain or explicitly unstarted work after recovery."""
+        pytest.fail('Interrupted runs must not be replayed automatically')
+    assert not asyncio.run(worker.process_one(factory, sender=forbidden))
+
+
+@pytest.mark.parametrize('phase', ['a', 'b'])
+def test_crash_separates_uncertain_calls_from_unstarted_questions(db_and_client, monkeypatch, phase):
+    """Distinguish an interrupted variant from the other unstarted variants and questions."""
+    factory, client = db_and_client
+    headers, service, body, _ = prepare(factory, client, monkeypatch, question_count=2)
+    exercise_interrupted_run(factory, client, headers, service, body, phase)
+
+
+def test_stop_before_first_question_records_only_unstarted_work(ready):
+    """Stop a claimed run before any company call and keep all variants in notRun."""
+    factory, client, headers, service, body, _ = ready
+    path = submit(client, headers, service, body)
+    async def scenario():
+        """Request shutdown before the worker reaches its first question."""
+        stop = asyncio.Event()
+        stop.set()
+        async def forbidden(*args):
+            """Ensure no company API is contacted after a pre-start shutdown request."""
+            pytest.fail('No company call should be attempted')
+        await worker.process_one(factory, sender=forbidden, stop_event=stop)
+    asyncio.run(scenario())
+    summary = client.get(path + '/summary', headers=headers).json()['data']
+    assert summary['evaluation']['status'] == 'FAILED'
+    for counts in summary['criteria'].values():
+        for side in ('a', 'b'):
+            assert counts[side]['notRun'] == 1
+            assert counts[side]['callFailed'] == counts[side]['callInterrupted'] == counts[side]['inProgress'] == 0
+
+
+def test_recovery_between_variants_keeps_b_unstarted(ready):
+    """Preserve saved A while counting B as unstarted if its durable intent was never set."""
+    factory, client, headers, service, body, _ = ready
+    path = submit(client, headers, service, body)
+    with factory() as db:
+        row = db.get(Evaluation, path.rsplit('/', 1)[1])
+        row.status = 'RUNNING'
+        row.heartbeat_at = now() - timedelta(seconds=worker.LEASE_SECONDS + 1)
+        item = db.scalar(select(EvaluationItem).where(EvaluationItem.evaluation_id == row.id))
+        item.status = 'RUNNING'
+        item.a = {**worker.pending_side('NOT_RUN', item.question_id), 'callStatus': 'SUCCEEDED',
+                  'answer': '저장된 답변 A', 'attemptCount': 1}
+        item.b = worker.pending_side('NOT_RUN', item.question_id)
+        db.commit()
+    worker.expire_abandoned(factory)
+    summary = client.get(path + '/summary', headers=headers).json()['data']
+    assert summary['evaluation']['status'] == 'PARTIAL_FAILED'
+    for counts in summary['criteria'].values():
+        assert counts['a']['notEvaluable'] == 1 and counts['b']['notRun'] == 1
+        assert counts['b']['callInterrupted'] == counts['b']['callFailed'] == 0
+    item = client.get(path + '/items', headers=headers).json()['data']['items'][0]
+    detail = client.get(path + '/items/' + item['id'], headers=headers).json()['data']
+    assert detail['status'] == 'INTERRUPTED'
+    assert detail['a']['answer'] == '저장된 답변 A'
+    assert detail['b']['callStatus'] == 'NOT_RUN' and detail['b']['attemptCount'] == 0
