@@ -2,6 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Response
 from sqlalchemy import select
+from sqlalchemy.orm import load_only
 
 from app.api.dependencies import CurrentUser, Db, OwnedService, ResourceId
 from app.api.projects import iso
@@ -63,7 +64,11 @@ def create(body: SuggestionCreate, chatbot: OwnedService, user: CurrentUser, db:
 
 @router.get('', response_model=Data[Page[SuggestionSummary]])
 def list_suggestions(chatbot: OwnedService, db: Db, limit: Limit = 20, cursor: Cursor = None):
-    rows, cursor = page_query(db, select(PromptSuggestion).where(PromptSuggestion.service_id == chatbot.id),
+    """Page lightweight metadata without loading model output or frozen evidence."""
+    statement = select(PromptSuggestion).options(load_only(PromptSuggestion.id,
+        PromptSuggestion.evaluation_id, PromptSuggestion.base_version_id, PromptSuggestion.applied_version_id,
+        PromptSuggestion.status, PromptSuggestion.revision, PromptSuggestion.created_at))
+    rows, cursor = page_query(db, statement.where(PromptSuggestion.service_id == chatbot.id),
         PromptSuggestion, f'promptSuggestions:{chatbot.id}', limit, cursor)
     return {'data': {'items': [summary(row) for row in rows], 'nextCursor': cursor}}
 
@@ -87,11 +92,13 @@ def select_suggestions(suggestionId: ResourceId, body: SuggestionSelection, chat
 
 @router.get('/{suggestionId}/results', response_model=Data[Page[SuggestionRerunResponse]])
 def results(suggestionId: ResourceId, chatbot: OwnedService, db: Db, limit: Limit = 20, cursor: Cursor = None):
+    """Link real reruns without loading their input snapshots or encrypted credentials."""
     row = service.get_suggestion(db, chatbot.id, suggestionId)
     if row.applied_version_id is None:
         return {'data': {'items': [], 'nextCursor': None}}
     # Relations derive from immutable rerun inputs; no new execution or comparison implementation.
-    statement = select(Evaluation).where(Evaluation.service_id == chatbot.id,
+    statement = select(Evaluation).options(load_only(Evaluation.id, Evaluation.status,
+        Evaluation.created_at)).where(Evaluation.service_id == chatbot.id,
         Evaluation.inputs['sourceEvaluationId'].as_string() == row.evaluation_id,
         Evaluation.inputs['prompts']['a']['id'].as_string() == row.applied_version_id)
     runs, cursor = page_query(db, statement, Evaluation, f'suggestionResults:{row.id}', limit, cursor)
