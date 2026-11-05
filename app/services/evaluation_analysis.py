@@ -61,7 +61,8 @@ def cause_analysis(inputs, question, name, side):
              'selectedPromptVersionId': prompt['id'] if prompt else None,
              'promptApplicationVerified': inputs.get('comparisonAssurance', {}).get('promptAppliedVerified', False),
              'conditionSources': []}
-    for condition in question.get('expectedConditions', []):
+    for source_condition in question.get('expectedConditions', []):
+        condition = normalize_condition(source_condition)
         matches = None if documents is None else [doc['id'] for doc in documents if condition['sourceQuote'] in doc['text']]
         facts['conditionSources'].append({'conditionId': condition['id'],
                                          'documentsContainingExactQuote': matches})
