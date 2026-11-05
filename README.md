@@ -25,6 +25,8 @@ DB 변경은 Alembic 마이그레이션으로 적용합니다. 이전에 자동 
 
 기업 챗봇 설정·인증정보 암호화·연결 테스트와 프롬프트 버전 관리는 [연동·프롬프트 인계 문서](docs/CONNECTION_PROMPT_HANDOFF.md)를 참고하세요. 연결 테스트에는 별도 `.venv/bin/python -m app.connection_worker` 실행이 필요합니다. 인증정보 저장 전 `.env`에 `CONNECTION_ENCRYPTION_KEY`를 설정합니다.
 
+평가 실행·A/B 비교는 [평가 인계 문서](docs/EVALUATION_HANDOFF.md)를 참고하세요. 별도 `.venv/bin/python -m app.evaluation_worker` 실행이 필요하며, 평가 AI가 연결되기 전에는 답변만 수집하고 판정은 판정 불가로 표시합니다.
+
 GitHub Actions는 PR에서 테스트하고 main 반영 시 테스트 통과 후 팀 서버의 **8000 포트**에 API·워커를 배포합니다. 초기 설정·비밀값·백업·복구 절차는 [배포 문서](docs/DEPLOYMENT.md)에 있습니다.
 
 ## 인증 API

@@ -1,0 +1,27 @@
+[Unit]
+Description=Osori A/B evaluation worker
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=osori
+Group=osori
+WorkingDirectory=/opt/osori-backend/current
+EnvironmentFile=/etc/osori-backend.env
+EnvironmentFile=/opt/osori-backend/current/.release.env
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/osori-backend/current/.venv/bin/python -m app.evaluation_worker
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=480
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+StateDirectory=osori-backend
+
+[Install]
+WantedBy=multi-user.target

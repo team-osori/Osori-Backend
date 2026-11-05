@@ -1,0 +1,112 @@
+from copy import deepcopy
+
+from sqlalchemy import select
+
+from app.core.errors import ApiError
+from app.models.connection import Connection
+from app.models.evaluation import Evaluation, EvaluationItem
+from app.services.evaluation_judge import CRITERIA
+from app.services.policy import get_evaluation_snapshot, iso
+from app.services.prompts import select_ab_versions
+
+CRITERION_KEYS = tuple(CRITERIA['definitions'])
+TERMINAL = ('COMPLETED', 'PARTIAL_FAILED', 'FAILED')
+
+
+def get_run(db, service_id, run_id):
+    """Require service membership in addition to the route's ownership check."""
+    row = db.scalar(select(Evaluation).where(Evaluation.id == run_id, Evaluation.service_id == service_id))
+    if row is None:
+        raise ApiError(404, 'RESOURCE_NOT_FOUND', '평가를 찾을 수 없습니다.')
+    return row
+
+
+def build_inputs(db, service, body, judge):
+    """Freeze verified connection settings, source policies, questions and both prompt originals."""
+    connection = db.scalar(select(Connection).where(Connection.service_id == service.id).with_for_update())
+    if connection is None:
+        raise ApiError(409, 'CONNECTION_REQUIRED', '챗봇 연동 설정을 먼저 등록하세요.')
+    if connection.revision != body.connectionRevision:
+        raise ApiError(409, 'CONNECTION_CHANGED', '최신 연동 revision을 확인하세요.')
+    if connection.verified_revision != connection.revision:
+        raise ApiError(409, 'CONNECTION_NOT_VERIFIED', '현재 연동 설정으로 연결 테스트를 완료하세요.')
+    if connection.config['executionMode'] != 'PROMPT_BODY':
+        raise ApiError(409, 'UNSUPPORTED_EXECUTION_MODE', 'A/B 평가는 PROMPT_BODY 모드가 필요합니다.')
+    if connection.config['auth']['type'] != 'NONE' and not connection.secret_ciphertext:
+        raise ApiError(409, 'CONNECTION_SECRET_REQUIRED', '기업 챗봇 인증정보를 등록하세요.')
+    a, b = select_ab_versions(db, service.id, body.aPromptVersionId, body.bPromptVersionId)
+    testset = get_evaluation_snapshot(db, service.project_id, body.testSetVersionId)
+    if not 1 <= len(testset['questions']) <= 200:
+        raise ApiError(409, 'INVALID_TESTSET', '평가 가능한 확정 문항이 필요합니다.')
+    assurance = {'sameQuestion': True, 'sameConnectionConfig': True, 'sameCriteria': True,
+                 'promptAppliedVerified': False, 'retrievalInputsControlled': False}
+    inputs = {'schemaVersion': 1, 'connection': {'id': connection.id, 'revision': connection.revision,
+        'config': deepcopy(connection.config)},
+        'prompts': {side: {'id': version.id, 'promptId': version.prompt_id, 'version': version.version,
+                    'content': version.content, 'label': version.label} for side, version in (('a', a), ('b', b))},
+        'testSet': deepcopy(testset), 'criteria': deepcopy(CRITERIA),
+        'judge': deepcopy(judge.descriptor()), 'comparisonAssurance': assurance}
+    return inputs, connection.secret_ciphertext
+
+
+def run_data(row):
+    """Expose progress and judge readiness, never encrypted credentials or full inputs."""
+    return {'id': row.id, 'serviceId': row.service_id, 'status': row.status,
+        'totalQuestions': row.total_questions, 'completedQuestions': row.completed_questions,
+        'failedQuestions': row.failed_questions, 'judge': row.inputs['judge'],
+        'comparisonAssurance': row.inputs['comparisonAssurance'],
+        'createdAt': iso(row.created_at), 'finishedAt': iso(row.finished_at)}
+
+
+def verdict(side, criterion):
+    """Call failures and unfinished sides cannot become policy failures or successes."""
+    if side is None or side['callStatus'] != 'SUCCEEDED':
+        return None
+    return side['criteria'][criterion]['status']
+
+
+def change(a, b, criterion):
+    """Compare only pairs with two real PASS/FAIL judgements."""
+    left, right = verdict(a, criterion), verdict(b, criterion)
+    if left not in ('PASS', 'FAIL') or right not in ('PASS', 'FAIL'):
+        return 'NOT_COMPARABLE'
+    return {('FAIL', 'PASS'): 'IMPROVED', ('PASS', 'FAIL'): 'WORSENED',
+            ('PASS', 'PASS'): 'UNCHANGED_PASS', ('FAIL', 'FAIL'): 'UNCHANGED_FAIL'}[(left, right)]
+
+
+def item_summary(row):
+    """Keep list responses bounded by excluding answer and document bodies."""
+    return {'id': row.id, 'questionId': row.question_id, 'question': row.input['question'],
+        'status': row.status, 'aCallStatus': row.a['callStatus'] if row.a else 'NOT_RUN',
+        'bCallStatus': row.b['callStatus'] if row.b else 'NOT_RUN',
+        'changes': {key: change(row.a, row.b, key) for key in CRITERION_KEYS}}
+
+
+def aggregate(run, rows):
+    """Compute per-criterion rates with only PASS+FAIL in the denominator, never a total score."""
+    results = {}
+    for key in CRITERION_KEYS:
+        entry = {}
+        for side_name in ('a', 'b'):
+            counts = {'pass': 0, 'fail': 0, 'notEvaluable': 0, 'callFailed': 0, 'notRun': 0}
+            for row in rows:
+                side = getattr(row, side_name)
+                if side is None:
+                    counts['notRun'] += 1
+                elif side['callStatus'] == 'FAILED':
+                    counts['callFailed'] += 1
+                else:
+                    counts[{'PASS': 'pass', 'FAIL': 'fail', 'NOT_EVALUABLE': 'notEvaluable'}[verdict(side, key)]] += 1
+            denominator = counts['pass'] + counts['fail']
+            entry[side_name] = {**counts, 'denominator': denominator,
+                'passRate': round(counts['pass'] / denominator * 100, 2) if denominator else None}
+        changes = {label: 0 for label in ('IMPROVED', 'WORSENED', 'UNCHANGED_PASS', 'UNCHANGED_FAIL', 'NOT_COMPARABLE')}
+        for row in rows:
+            changes[change(row.a, row.b, key)] += 1
+        paired = sum(count for label, count in changes.items() if label != 'NOT_COMPARABLE')
+        entry['comparison'] = {**changes, 'pairedDenominator': paired,
+            'aPairedPassRate': round((changes['WORSENED'] + changes['UNCHANGED_PASS']) / paired * 100, 2) if paired else None,
+            'bPairedPassRate': round((changes['IMPROVED'] + changes['UNCHANGED_PASS']) / paired * 100, 2) if paired else None}
+        results[key] = entry
+    return {'evaluation': run_data(run), 'criteria': results,
+            'formula': 'PASS / (PASS + FAIL) * 100', 'provisional': run.status not in TERMINAL}

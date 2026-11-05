@@ -14,9 +14,9 @@ def account(client, login='owner'):
     return {'Authorization': 'Bearer ' + tokens['accessToken']}
 
 
-def setup(client):
+def setup(client, login='owner'):
     """Create original policy evidence and an empty human-review draft."""
-    headers = account(client)
+    headers = account(client, login)
     project = client.post('/api/projects', json={'name': 'Test'}, headers=headers).json()['data']['id']
     base = f'/api/projects/{project}'
     policy = {'name': '환불 규정', 'content': '  예약 취소는 출발 24시간 전까지 가능합니다.\n임의 보상은 금지합니다.  ',

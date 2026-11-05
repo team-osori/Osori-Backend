@@ -160,3 +160,61 @@ def test_header_auth_and_connection_only():
         return 'answer'
 
     assert asyncio.run(gateway.execute_chatbot(config, 'Q', None, 'secret', sender=sender)).answer == 'answer'
+
+
+@pytest.mark.parametrize('documents,citations,code', [
+    ([{'id': 'policy-v1', 'title': '취소 정책', 'text': '24시간 전까지 취소 가능', 'source': 'policy/refund/v1'}],
+     [{'documentId': 'policy-v1', 'quote': '24시간 전까지'}], None),
+    ([], [], None),
+    (None, None, None),
+    ([{'id': 'policy-v1', 'text': 'original'}], [{'documentId': 'policy-v1', 'quote': 'invented'}], 'INVALID_UPSTREAM_RESPONSE'),
+    ([{'id': 'same', 'text': 'A'}, {'id': 'same', 'text': 'B'}], [], 'INVALID_UPSTREAM_RESPONSE'),
+    ('unexpected', [], 'INVALID_UPSTREAM_RESPONSE'),
+])
+def test_retrieval_json_transport(monkeypatch, documents, citations, code):
+    import json
+    raw = json.dumps({'answer': '답변', 'retrieval': {'documents': documents}, 'citations': citations}).encode()
+
+    class Content:
+        async def iter_chunked(self, size):
+            yield raw
+
+    class Response:
+        status = 200
+        content = Content()
+        headers = {}
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+
+    class Session:
+        def __init__(self, **kwargs):
+            self.connector = kwargs['connector']
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            await self.connector.close()
+        def post(self, *args, **kwargs):
+            return Response()
+
+    monkeypatch.setattr(gateway.aiohttp, 'ClientSession', Session)
+    config = {**CONFIG, 'retrievalPointer': '/retrieval/documents', 'citationsPointer': '/citations'}
+    result = asyncio.run(gateway.execute_chatbot(config, 'Q', 'P', 'secret'))
+    if code:
+        assert result.error['code'] == code
+        assert result.answer is None
+    else:
+        assert result.answer == '답변' and result.error is None
+        assert result.evidence['documents'] == documents
+        assert result.evidence['citations'] == citations
+
+
+def test_credential_echo_is_removed_from_retrieval_evidence():
+    async def sender(*args):
+        return gateway.ChatbotReply('answer secret', {'documents': [{'id': 'd', 'text': 'source secret'}],
+            'citations': [{'documentId': 'd', 'quote': 'source secret'}]})
+
+    result = asyncio.run(gateway.execute_chatbot(CONFIG, 'Q', 'P', 'secret', sender=sender))
+    assert 'secret' not in str(result)
+    assert result.evidence['documents'][0]['text'] == 'source [REDACTED]'

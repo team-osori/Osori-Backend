@@ -45,6 +45,8 @@ class ConnectionPut(BaseModel):
     questionPointer: Annotated[str, Field(min_length=1, max_length=500)]
     answerPointer: Annotated[str, Field(min_length=1, max_length=500)]
     promptPointer: Annotated[str | None, Field(max_length=500)] = None
+    retrievalPointer: Annotated[str | None, Field(min_length=1, max_length=500)] = None
+    citationsPointer: Annotated[str | None, Field(min_length=1, max_length=500)] = None
     auth: AuthConfig
     timeoutMs: Annotated[int, Field(ge=100, le=60_000, strict=True)]
     maxRetries: Annotated[int, Field(ge=0, le=2, strict=True)]
@@ -80,6 +82,9 @@ class ConnectionPut(BaseModel):
             raise ValueError('요청 템플릿이 너무 큽니다.')
         read_pointer(self.requestTemplate, self.questionPointer)
         tokens(self.answerPointer)
+        for pointer in (self.retrievalPointer, self.citationsPointer):
+            if pointer is not None:
+                tokens(pointer)
         if self.executionMode == 'PROMPT_BODY':
             if self.promptPointer is None:
                 raise ValueError('promptPointer가 필요합니다.')
@@ -136,6 +141,8 @@ class ConnectionResponse(BaseModel):
     questionPointer: str
     answerPointer: str
     promptPointer: str | None
+    retrievalPointer: str | None = None
+    citationsPointer: str | None = None
     auth: AuthResponse
     timeoutMs: int
     maxRetries: int

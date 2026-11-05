@@ -12,6 +12,8 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from app.core.errors import ApiError
+from app.schemas.evaluation import Evidence
+
 from app.services.json_pointer import read_pointer, write_pointer
 
 MAX_RESPONSE_BYTES = 1024 * 1024
@@ -75,9 +77,17 @@ class GatewayResult:
     latency_ms: int
     attempt_count: int
     error: dict | None
+    evidence: dict | None = None
 
 
-async def send_once(config: dict, payload: dict, headers: dict) -> str:
+@dataclass(frozen=True)
+class ChatbotReply:
+    """Optional structured response while preserving existing string-only senders."""
+    answer: str
+    evidence: dict
+
+
+async def send_once(config: dict, payload: dict, headers: dict) -> str | ChatbotReply:
     validate_endpoint(config['url'])
     connector = aiohttp.TCPConnector(resolver=PublicResolver(), use_dns_cache=False)
     async with aiohttp.ClientSession(connector=connector, trust_env=False,
@@ -99,12 +109,18 @@ async def send_once(config: dict, payload: dict, headers: dict) -> str:
                 if len(body) > MAX_RESPONSE_BYTES:
                     raise GatewayError('UPSTREAM_RESPONSE_TOO_LARGE', '기업 챗봇 응답이 너무 큽니다.')
             try:
-                answer = read_pointer(json.loads(body), config['answerPointer'])
+                response_body = json.loads(body)
+                answer = read_pointer(response_body, config['answerPointer'])
+                evidence = {}
+                for field, setting in (('documents', 'retrievalPointer'), ('citations', 'citationsPointer')):
+                    if config.get(setting):
+                        evidence[field] = read_pointer(response_body, config[setting])
+                evidence = Evidence.model_validate(evidence).model_dump()
             except (ValueError, TypeError, RecursionError):
                 raise GatewayError('INVALID_UPSTREAM_RESPONSE', 'JSON 답변 경로를 확인해 주세요.') from None
             if not isinstance(answer, str) or not answer.strip() or len(answer) > 100_000:
                 raise GatewayError('INVALID_UPSTREAM_RESPONSE', '답변은 1~100,000자의 문자열이어야 합니다.')
-            return answer
+            return ChatbotReply(answer, evidence) if config.get('retrievalPointer') or config.get('citationsPointer') else answer
 
 
 async def execute_chatbot(config: dict, question: str, prompt: str | None,
@@ -130,10 +146,13 @@ async def execute_chatbot(config: dict, question: str, prompt: str | None,
         try:
             # Includes DNS resolution, connect, response headers and streaming body.
             async with asyncio.timeout(config['timeoutMs'] / 1000):
-                answer = await sender(config, deepcopy(payload), dict(headers))
+                reply = await sender(config, deepcopy(payload), dict(headers))
+            answer = reply.answer if isinstance(reply, ChatbotReply) else reply
+            evidence = reply.evidence if isinstance(reply, ChatbotReply) else Evidence().model_dump()
             if secret:
                 answer = answer.replace(secret, '[REDACTED]')
-            return GatewayResult(answer, int((monotonic() - start) * 1000), attempt, None)
+                evidence = redact_evidence(evidence, secret)
+            return GatewayResult(answer, int((monotonic() - start) * 1000), attempt, None, evidence)
         except TimeoutError:
             error = GatewayError('UPSTREAM_TIMEOUT', '기업 챗봇 응답 시간이 초과되었습니다.', True)
         except ApiError as exc:
@@ -146,3 +165,14 @@ async def execute_chatbot(config: dict, question: str, prompt: str | None,
             return GatewayResult(None, int((monotonic() - start) * 1000), attempt,
                                  {'code': error.code, 'message': error.message})
         await asyncio.sleep(0.25 * attempt)
+
+
+def redact_evidence(value, secret):
+    """Mask credential echoes recursively without changing the structured response shape."""
+    if isinstance(value, str):
+        return value.replace(secret, '[REDACTED]')
+    if isinstance(value, list):
+        return [redact_evidence(item, secret) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_evidence(item, secret) for key, item in value.items()}
+    return value

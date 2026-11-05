@@ -3,7 +3,7 @@ from sqlalchemy import engine_from_config, pool
 
 from app.core.config import DATABASE_URL
 from app.core.database import Base
-from app.models import auth, rate_limit, project, prompt, connection, policy  # noqa: F401
+from app.models import auth, rate_limit, project, prompt, connection, policy, evaluation  # noqa: F401
 
 config = context.config
 target_metadata = Base.metadata

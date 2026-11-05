@@ -20,6 +20,7 @@ main의 테스트가 성공하면 production 환경에서 SSH로 해당 커밋�
 | --- | --- |
 | API 서비스 | `osori-api.service`, Uvicorn 프로세스 2개, 포트 8000 |
 | 연결 테스트 워커 | `osori-worker.service`, API와 별도 프로세스 |
+| A/B 평가 워커 | `osori-evaluation-worker.service`, API와 별도 프로세스 |
 | Python | Ubuntu 24.04의 Python 3.12, 릴리스별 `.venv` |
 | MySQL | 로컬 `osori` DB, 전용 `osori_app` 계정 |
 | 애플리케이션 사용자 | 로그인 불가능한 시스템 사용자 `osori` |
@@ -65,8 +66,8 @@ CI 전용 키의 공개 키만 ubuntu의 authorized_keys에 위 제한 옵션과
 ## 확인 명령
 
 ```bash
-sudo systemctl status osori-api osori-worker --no-pager
-sudo journalctl -u osori-api -u osori-worker -n 100 --no-pager
+sudo systemctl status osori-api osori-worker osori-evaluation-worker --no-pager
+sudo journalctl -u osori-api -u osori-worker -u osori-evaluation-worker -n 100 --no-pager
 curl -fsS http://127.0.0.1:8000/api/ready
 readlink -f /opt/osori-backend/current
 ```
@@ -83,3 +84,14 @@ uv pip compile pyproject.toml --extra dev --python-version 3.12 --python-platfor
 ```
 
 참고: [GitHub Actions 비밀값](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets), [동시 실행 제어](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency), [systemd 서비스](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html).
+
+## 평가 워커 최초 도입 시
+
+평가 워커 unit은 저장소에 추가했으며 실제 운영 서버 반영 여부는 별도로 확인해야 합니다. 기존 서버는 직전 릴리스에서 설치한 배포 도구를 사용하므로, 평가 워커가 포함된 첫 배포 **전에** 운영자가 이번 변경의 deploy 디렉터리에서 아래 도구를 갱신해야 합니다. API 코드나 환경 파일은 이 명령으로 교체하지 않습니다.
+
+```bash
+sudo install -m 0755 deploy/deploy.sh /usr/local/sbin/osori-deploy
+sudo install -m 0644 deploy/archive.py /usr/local/lib/osori/archive.py
+```
+
+이후 새 릴리스 배포가 API·연결 테스트 워커·평가 워커의 unit을 설치하고 함께 시작·확인합니다. 평가 워커 종료 대기 한도는 480초이며 현재 문항의 A/B 기업 호출·판정이 끝나도록 기다립니다. 남은 문항은 WORKER_STOPPED로 끝나므로 배포 전에 진행 중 평가를 확인하세요. 이전 코드로 롤백하면 이전 릴리스에 평가 unit이 있는지 확인해 서비스를 복구하며, 평가 기능 이전 릴리스라면 평가 서비스를 중지·해제합니다. DB 테이블과 저장된 평가 이력은 자동 삭제하지 않습니다.

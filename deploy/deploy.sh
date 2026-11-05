@@ -16,11 +16,24 @@ previous=$(readlink -f "$root/current" || true)
 [[ -d "$previous" ]] || previous=''
 temporary=$(mktemp -d /var/tmp/osori-release.XXXXXX)
 services_stopped=0
+services=(osori-api osori-worker)
+if [[ -f /etc/systemd/system/osori-evaluation-worker.service ]]; then
+  services+=(osori-evaluation-worker)
+fi
 
 install_units() {
   local source=$1
   install -m 0644 "$source/deploy/systemd/osori-api.service" /etc/systemd/system/osori-api.service
   install -m 0644 "$source/deploy/systemd/osori-worker.service" /etc/systemd/system/osori-worker.service
+  services=(osori-api osori-worker)
+  if [[ -f "$source/deploy/systemd/osori-evaluation-worker.service" ]]; then
+    install -m 0644 "$source/deploy/systemd/osori-evaluation-worker.service" /etc/systemd/system/osori-evaluation-worker.service
+    services+=(osori-evaluation-worker)
+  else
+    # A rollback can target a release predating evaluation support.
+    systemctl disable osori-evaluation-worker 2>/dev/null || true
+    rm -f /etc/systemd/system/osori-evaluation-worker.service
+  fi
   systemctl daemon-reload
 }
 
@@ -29,17 +42,24 @@ set_current() {
   mv -Tf "$root/current.next" "$root/current"
 }
 
+all_services_ready() {
+  local unit
+  for unit in "${services[@]}"; do
+    systemctl is-active --quiet "$unit" || return 1
+  done
+}
+
 finish() {
   local status=$?
   trap - EXIT
   if [[ $status -ne 0 && $services_stopped -eq 1 ]]; then
     echo 'Deployment failed; restoring the previous application release.' >&2
-    systemctl stop osori-api osori-worker || true
+    systemctl stop "${services[@]}" || true
     if [[ -n "$previous" ]]; then
       set_current "$previous"
       install_units "$previous"
-      systemctl reset-failed osori-api osori-worker || true
-      systemctl start osori-api osori-worker || true
+      systemctl reset-failed "${services[@]}" || true
+      systemctl start "${services[@]}" || true
     fi
     echo 'Database migrations are not automatically reversed. A pre-migration backup is retained.' >&2
   fi
@@ -68,21 +88,21 @@ fi
 services_stopped=1
 if [[ -n "$previous" ]]; then
   # The worker handles SIGTERM by finishing the current bounded request before exiting.
-  systemctl stop osori-worker osori-api
+  systemctl stop "${services[@]}"
 fi
 .venv/bin/python deploy/manage.py backup "/var/backups/osori-backend/$release_id.sql.gz"
 runuser -u osori -- .venv/bin/python deploy/manage.py migrate
 set_current "$release"
 install_units "$release"
-systemctl enable osori-api osori-worker
-systemctl reset-failed osori-api osori-worker || true
-systemctl start osori-api osori-worker
+systemctl enable "${services[@]}"
+systemctl reset-failed "${services[@]}" || true
+systemctl start "${services[@]}"
 
 ready=0
 for _ in {1..45}; do
   if curl --fail --silent --max-time 3 http://127.0.0.1:8000/api/ready \
       | .venv/bin/python -c 'import json,sys; assert json.load(sys.stdin) == {"status":"ok","revision":sys.argv[1]}' "$revision" 2>/dev/null \
-      && systemctl is-active --quiet osori-worker; then
+      && all_services_ready; then
     ready=1
     break
   fi
@@ -117,4 +137,4 @@ backups = sorted(Path('/var/backups/osori-backend').glob('*.sql.gz'),
 for backup in backups[3:]:
     backup.unlink()
 PY
-echo "Deployed $revision on port 8000; API and worker are healthy."
+echo "Deployed $revision on port 8000; API and workers are healthy."
