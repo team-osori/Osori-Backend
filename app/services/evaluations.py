@@ -7,10 +7,14 @@ from app.models.connection import Connection
 from app.models.evaluation import Evaluation, EvaluationItem
 from app.services.evaluation_judge import CRITERIA
 from app.services.policy import get_evaluation_snapshot, iso
-from app.services.prompts import select_ab_versions
+from app.services.prompts import get_version, select_ab_versions
 
 CRITERION_KEYS = tuple(CRITERIA['definitions'])
 TERMINAL = ('COMPLETED', 'PARTIAL_FAILED', 'FAILED')
+
+
+def side_names(inputs):
+    return ('a',) if inputs.get('mode') == 'SINGLE' else ('a', 'b')
 
 
 def get_run(db, service_id, run_id):
@@ -30,20 +34,29 @@ def build_inputs(db, service, body, judge):
         raise ApiError(409, 'CONNECTION_CHANGED', '최신 연동 revision을 확인하세요.')
     if connection.verified_revision != connection.revision:
         raise ApiError(409, 'CONNECTION_NOT_VERIFIED', '현재 연동 설정으로 연결 테스트를 완료하세요.')
-    if connection.config['executionMode'] != 'PROMPT_BODY':
+    mode = body.resolved_mode
+    inject_prompt = mode == 'COMPARE' or body.promptVersionId is not None
+    if inject_prompt and connection.config['executionMode'] != 'PROMPT_BODY':
         raise ApiError(409, 'UNSUPPORTED_EXECUTION_MODE', 'A/B 평가는 PROMPT_BODY 모드가 필요합니다.')
     if connection.config['auth']['type'] != 'NONE' and not connection.secret_ciphertext:
         raise ApiError(409, 'CONNECTION_SECRET_REQUIRED', '기업 챗봇 인증정보를 등록하세요.')
-    a, b = select_ab_versions(db, service.id, body.aPromptVersionId, body.bPromptVersionId)
+    if mode == 'COMPARE':
+        a, b = select_ab_versions(db, service.id, body.aPromptVersionId, body.bPromptVersionId)
+        versions = (('a', a), ('b', b))
+    elif body.promptVersionId:
+        versions = (('a', get_version(db, service.id, body.promptVersionId)),)
+    else:
+        versions = ()
     testset = get_evaluation_snapshot(db, service.project_id, body.testSetVersionId)
     if not 1 <= len(testset['questions']) <= 200:
         raise ApiError(409, 'INVALID_TESTSET', '평가 가능한 확정 문항이 필요합니다.')
     assurance = {'sameQuestion': True, 'sameConnectionConfig': True, 'sameCriteria': True,
                  'promptAppliedVerified': False, 'retrievalInputsControlled': False}
-    inputs = {'schemaVersion': 1, 'connection': {'id': connection.id, 'revision': connection.revision,
+    inputs = {'schemaVersion': 1, 'mode': mode, 'useConfiguredPrompt': not inject_prompt,
+        'connection': {'id': connection.id, 'revision': connection.revision,
         'config': deepcopy(connection.config)},
         'prompts': {side: {'id': version.id, 'promptId': version.prompt_id, 'version': version.version,
-                    'content': version.content, 'label': version.label} for side, version in (('a', a), ('b', b))},
+                    'content': version.content, 'label': version.label} for side, version in versions},
         'testSet': deepcopy(testset), 'criteria': deepcopy(CRITERIA),
         'judge': deepcopy(judge.descriptor()), 'comparisonAssurance': assurance}
     return inputs, connection.secret_ciphertext
@@ -52,6 +65,7 @@ def build_inputs(db, service, body, judge):
 def run_data(row):
     """Expose progress and judge readiness, never encrypted credentials or full inputs."""
     return {'id': row.id, 'serviceId': row.service_id, 'status': row.status,
+        'mode': row.inputs.get('mode', 'COMPARE'),
         'totalQuestions': row.total_questions, 'completedQuestions': row.completed_questions,
         'failedQuestions': row.failed_questions, 'judge': row.inputs['judge'],
         'comparisonAssurance': row.inputs['comparisonAssurance'],
@@ -75,12 +89,13 @@ def change(a, b, criterion):
             ('PASS', 'PASS'): 'UNCHANGED_PASS', ('FAIL', 'FAIL'): 'UNCHANGED_FAIL'}[(left, right)]
 
 
-def item_summary(row):
+def item_summary(row, inputs=None):
     """Keep list responses bounded by excluding answer and document bodies."""
+    single = inputs is not None and inputs.get('mode') == 'SINGLE'
     return {'id': row.id, 'questionId': row.question_id, 'question': row.input['question'],
         'status': row.status, 'aCallStatus': row.a['callStatus'] if row.a else 'NOT_RUN',
-        'bCallStatus': row.b['callStatus'] if row.b else 'NOT_RUN',
-        'changes': {key: change(row.a, row.b, key) for key in CRITERION_KEYS}}
+        'bCallStatus': 'NOT_APPLICABLE' if single else row.b['callStatus'] if row.b else 'NOT_RUN',
+        'changes': {} if single else {key: change(row.a, row.b, key) for key in CRITERION_KEYS}}
 
 
 def aggregate(run, rows):
@@ -88,7 +103,7 @@ def aggregate(run, rows):
     results = {}
     for key in CRITERION_KEYS:
         entry = {}
-        for side_name in ('a', 'b'):
+        for side_name in side_names(run.inputs):
             counts = {'pass': 0, 'fail': 0, 'notEvaluable': 0, 'judgeFailed': 0,
                       'callFailed': 0, 'callInterrupted': 0, 'inProgress': 0, 'notRun': 0}
             for row in rows:
@@ -108,6 +123,9 @@ def aggregate(run, rows):
             denominator = counts['pass'] + counts['fail']
             entry[side_name] = {**counts, 'denominator': denominator,
                 'passRate': round(counts['pass'] / denominator * 100, 2) if denominator else None}
+        if run.inputs.get('mode') == 'SINGLE':
+            results[key] = {**entry, 'b': None, 'comparison': None}
+            continue
         changes = {label: 0 for label in ('IMPROVED', 'WORSENED', 'UNCHANGED_PASS', 'UNCHANGED_FAIL', 'NOT_COMPARABLE')}
         for row in rows:
             changes[change(row.a, row.b, key)] += 1

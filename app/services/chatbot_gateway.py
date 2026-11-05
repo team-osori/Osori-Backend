@@ -124,13 +124,13 @@ async def send_once(config: dict, payload: dict, headers: dict) -> str | Chatbot
 
 
 async def execute_chatbot(config: dict, question: str, prompt: str | None,
-                          secret: str | None, *, sender=None) -> GatewayResult:
+                          secret: str | None, *, sender=None, apply_prompt=True) -> GatewayResult:
     """No session sharing, no secret logging, and only explicitly safe bounded retries."""
     sender = sender or send_once
     start = monotonic()
     payload = deepcopy(config['requestTemplate'])
     write_pointer(payload, config['questionPointer'], question)
-    if config['executionMode'] == 'PROMPT_BODY':
+    if config['executionMode'] == 'PROMPT_BODY' and apply_prompt:
         if prompt is None:
             raise ApiError(400, 'VALIDATION_ERROR', '프롬프트 버전이 필요합니다.')
         write_pointer(payload, config['promptPointer'], prompt)

@@ -98,13 +98,31 @@ class EvaluationCreate(BaseModel):
     model_config = ConfigDict(extra='forbid')
     connectionRevision: Annotated[int, Field(strict=True, ge=1, le=2**31 - 1)]
     testSetVersionId: Id
-    aPromptVersionId: Id
-    bPromptVersionId: Id
+    mode: Literal['SINGLE', 'COMPARE'] | None = None
+    promptVersionId: Id | None = None
+    aPromptVersionId: Id | None = None
+    bPromptVersionId: Id | None = None
+
+    @model_validator(mode='after')
+    def validate_targets(self):
+        if self.resolved_mode == 'COMPARE':
+            if not self.aPromptVersionId or not self.bPromptVersionId or self.promptVersionId:
+                raise ValueError('비교에는 A/B 프롬프트 두 개를 지정하세요.')
+        elif self.aPromptVersionId or self.bPromptVersionId:
+            raise ValueError('단일 평가에는 promptVersionId만 선택할 수 있습니다.')
+        return self
+
+    @property
+    def resolved_mode(self):
+        if self.mode:
+            return self.mode
+        return 'COMPARE' if self.aPromptVersionId or self.bPromptVersionId else 'SINGLE'
 
 
 class EvaluationResponse(BaseModel):
     id: str
     serviceId: str
+    mode: Literal['SINGLE', 'COMPARE'] = 'COMPARE'
     status: Literal['QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED']
     totalQuestions: int
     completedQuestions: int
@@ -121,7 +139,7 @@ class EvaluationItemSummary(BaseModel):
     question: str
     status: Literal['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'NOT_RUN', 'INTERRUPTED']
     aCallStatus: Literal['NOT_RUN', 'RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED']
-    bCallStatus: Literal['NOT_RUN', 'RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED']
+    bCallStatus: Literal['NOT_APPLICABLE', 'NOT_RUN', 'RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED']
     changes: dict[str, str]
 
 
@@ -151,6 +169,8 @@ class EvaluationInputs(BaseModel):
     criteria: dict
     judge: dict
     comparisonAssurance: dict
+    mode: Literal['SINGLE', 'COMPARE'] = 'COMPARE'
+    useConfiguredPrompt: bool = False
 
 
 class CriterionCounts(BaseModel):
@@ -179,8 +199,8 @@ class ComparisonCounts(BaseModel):
 
 class CriterionSummary(BaseModel):
     a: CriterionCounts
-    b: CriterionCounts
-    comparison: ComparisonCounts
+    b: CriterionCounts | None
+    comparison: ComparisonCounts | None
 
 
 class CriteriaSummary(BaseModel):
