@@ -10,7 +10,8 @@ STATUSES = ('MET', 'UNMET', 'REVIEW_REQUIRED', 'JUDGMENT_ERROR', 'EXECUTION_ERRO
 
 def apply_reviews(question, side, reviews):
     effective = deepcopy(side)
-    conditions = {condition['id']: condition for condition in question.get('expectedConditions', [])}
+    conditions = {condition['id']: normalize_condition(condition)
+                  for condition in question.get('expectedConditions', [])}
     results = {result['conditionId']: result for result in effective.get('conditionResults', [])}
     categories = set()
     for review in reviews:
