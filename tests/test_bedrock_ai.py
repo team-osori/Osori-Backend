@@ -52,6 +52,11 @@ def test_bedrock_selection_needs_no_personal_key_and_keeps_region_and_model(monk
     monkeypatch.setenv('QUESTION_GENERATION_PROVIDER', 'openai')
     monkeypatch.setenv('QUESTION_GENERATION_MODEL', 'gpt-test')
     assert get_evaluation_judge().model == runtime.DEFAULT_MODEL
+    monkeypatch.setenv('QUESTION_GENERATION_PROVIDER', 'bedrock')
+    monkeypatch.setenv('QUESTION_GENERATION_MODEL', runtime.DEFAULT_MODEL)
+    monkeypatch.setenv('EVALUATION_JUDGE_PROVIDER', 'openai')
+    from app.services.question_generation import DEFAULT_MODEL as OPENAI_MODEL
+    assert get_evaluation_judge().model == OPENAI_MODEL
 
 
 def test_real_sdk_converse_schema_generates_validated_drafts(stubbed):

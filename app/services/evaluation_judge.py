@@ -66,7 +66,8 @@ def get_evaluation_judge() -> EvaluationJudge:
         if key:
             from app.services.openai_evaluation_judge import OpenAIEvaluationJudge
             from app.services.question_generation import DEFAULT_MODEL
-            model = (os.getenv('EVALUATION_JUDGE_MODEL', '').strip()
-                     or os.getenv('QUESTION_GENERATION_MODEL', '').strip() or DEFAULT_MODEL)
-            return OpenAIEvaluationJudge(key, model)
+            model = os.getenv('EVALUATION_JUDGE_MODEL', '').strip()
+            if not model and os.getenv('QUESTION_GENERATION_PROVIDER', '').strip().lower() == 'openai':
+                model = os.getenv('QUESTION_GENERATION_MODEL', '').strip()
+            return OpenAIEvaluationJudge(key, model or DEFAULT_MODEL)
     return UnconfiguredJudge()
