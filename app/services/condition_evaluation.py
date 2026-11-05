@@ -20,6 +20,17 @@ CRITERIA = {
 }
 
 
+def normalize_condition(condition):
+    """Read A source conditions and older B snapshots through one display contract."""
+    if 'description' in condition:
+        source = SourceCondition.model_validate(condition)
+        condition = {'id': source.id, 'criterion': 'questionResolution' if source.category == 'response' else source.category,
+            'requirement': source.description, 'policyVersionId': source.policyVersionId,
+            'sourceQuote': source.evidenceQuote, 'kind': source.kind, 'category': source.category,
+            'ruleKeys': source.ruleKeys}
+    return ExpectedCondition.model_validate(condition).model_dump()
+
+
 def prepare_questions(testset):
     """Normalize an immutable B snapshot without changing A's source records."""
     result = deepcopy(testset)
@@ -31,15 +42,7 @@ def prepare_questions(testset):
             conditions = legacy_conditions(question, question['id'])
         if not 1 <= len(conditions) <= 100:
             raise ValueError('Expected conditions must be bounded and nonempty')
-        parsed = []
-        for condition in conditions:
-            if 'description' in condition:
-                source = SourceCondition.model_validate(condition)
-                condition = {'id': source.id, 'criterion': 'questionResolution' if source.category == 'response' else source.category,
-                    'requirement': source.description, 'policyVersionId': source.policyVersionId,
-                    'sourceQuote': source.evidenceQuote, 'kind': source.kind, 'category': source.category,
-                    'ruleKeys': source.ruleKeys}
-            parsed.append(ExpectedCondition.model_validate(condition).model_dump())
+        parsed = [normalize_condition(condition) for condition in conditions]
         if len({condition['id'] for condition in parsed}) != len(parsed):
             raise ValueError('Duplicate condition IDs')
         for condition in parsed:
