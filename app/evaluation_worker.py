@@ -18,7 +18,7 @@ from app.schemas.evaluation import Evidence, Judgement
 from app.services.auth import now
 from app.services.chatbot_gateway import execute_chatbot
 from app.services.evaluation_judge import get_evaluation_judge
-from app.services.evaluations import CRITERION_KEYS
+from app.services.evaluations import CRITERION_KEYS, side_names
 from app.services.policy import uid
 
 LEASE_SECONDS = 600
@@ -53,7 +53,7 @@ def close_interrupted(db, run, code='WORKER_INTERRUPTED'):
     for item in items:
         if item.status in ('QUEUED', 'RUNNING'):
             error = {'code': code, 'message': '작업 실행이 중단되었습니다.'}
-            for name in ('a', 'b'):
+            for name in side_names(run.inputs):
                 side = getattr(item, name)
                 # Missing results on legacy RUNNING rows may follow an actual call.
                 if side is None:
@@ -63,11 +63,12 @@ def close_interrupted(db, run, code='WORKER_INTERRUPTED'):
                 else:
                     continue  # Preserve already persisted successes and failures.
                 setattr(item, name, pending_side(status, item.question_id, error))
-            if all(side['callStatus'] == 'SUCCEEDED' for side in (item.a, item.b)):
+            sides = [getattr(item, name) for name in side_names(run.inputs)]
+            if all(side['callStatus'] == 'SUCCEEDED' for side in sides):
                 item.status = 'COMPLETED'
-            elif all(side['callStatus'] == 'NOT_RUN' for side in (item.a, item.b)):
+            elif all(side['callStatus'] == 'NOT_RUN' for side in sides):
                 item.status = 'NOT_RUN'
-            elif any(side['callStatus'] == 'FAILED' for side in (item.a, item.b)):
+            elif any(side['callStatus'] == 'FAILED' for side in sides):
                 item.status = 'FAILED'
             else:
                 item.status = 'INTERRUPTED'
@@ -81,7 +82,7 @@ def finish(db, run, items=None):
     closed = ('COMPLETED', 'FAILED', 'NOT_RUN', 'INTERRUPTED')
     run.completed_questions = sum(item.status in closed for item in items)
     run.failed_questions = sum(item.status in closed and item.status != 'COMPLETED' for item in items)
-    any_success = any(side and side['callStatus'] == 'SUCCEEDED' for item in items for side in (item.a, item.b))
+    any_success = any(side and side['callStatus'] == 'SUCCEEDED' for item in items for side in (getattr(item, name) for name in side_names(run.inputs)))
     run.status = ('PARTIAL_FAILED' if any_success else 'FAILED') if run.failed_questions else 'COMPLETED'
     run.finished_at = now()
     # Credentials are no longer needed after terminal execution; inputs remain reproducible.
@@ -143,7 +144,8 @@ async def execute_side(inputs, question, side, secret, judge, sender):
     """Call both variants with the same frozen request settings and isolated network sessions."""
     try:
         result = await execute_chatbot(deepcopy(inputs['connection']['config']), question['question'],
-            inputs['prompts'][side]['content'], secret, sender=sender)
+            inputs['prompts'].get(side, {}).get('content'), secret, sender=sender,
+            apply_prompt=not inputs.get('useConfiguredPrompt', False))
         if result.error:
             failed = failed_side(result.error['code'], result.error['message'], question['id'])
             failed.update(latencyMs=result.latency_ms, attemptCount=result.attempt_count)
@@ -214,11 +216,11 @@ async def process_one(factory=SessionLocal, *, sender=None, judge=None, stop_eve
             item.status = 'RUNNING'
             # Persist intent before A; B is explicitly known to be unstarted.
             item.a = pending_side('RUNNING', item.question_id)
-            item.b = pending_side('NOT_RUN', item.question_id)
+            item.b = pending_side('NOT_RUN', item.question_id) if 'b' in side_names(inputs) else None
             question = deepcopy(item.input)
             row.heartbeat_at = now()
             db.commit()
-        for side in ('a', 'b'):
+        for side in side_names(inputs):
             if side == 'b':
                 with factory() as db:
                     row = locked_run(db, id_, token)
@@ -236,8 +238,9 @@ async def process_one(factory=SessionLocal, *, sender=None, judge=None, stop_eve
                 item = db.get(EvaluationItem, item_id)
                 setattr(item, side, outcome)
                 row.heartbeat_at = now()
-                if side == 'b':
-                    item.status = 'FAILED' if any(s['callStatus'] == 'FAILED' for s in (item.a, item.b)) else 'COMPLETED'
+                if side == side_names(inputs)[-1]:
+                    sides = [getattr(item, name) for name in side_names(inputs)]
+                    item.status = 'FAILED' if any(s['callStatus'] == 'FAILED' for s in sides) else 'COMPLETED'
                     row.completed_questions += 1
                     row.failed_questions += int(item.status == 'FAILED')
                 db.commit()

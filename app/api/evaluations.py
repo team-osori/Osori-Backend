@@ -30,7 +30,7 @@ def create_evaluation(body: EvaluationCreate, service_row: OwnedService, user: C
                       idempotency_key: Annotated[str, Header(alias='Idempotency-Key', min_length=1, max_length=100, pattern=r'^[!-~]+$')]):
     """Submit one durable A/B run; snapshot both source data and encrypted credentials atomically."""
     key = hashlib.sha256(f'{user.id}|{idempotency_key}'.encode()).hexdigest()
-    fingerprint = hashlib.sha256(json.dumps(body.model_dump(), sort_keys=True).encode()).hexdigest()
+    fingerprint = hashlib.sha256(json.dumps(body.model_dump(exclude_none=True), sort_keys=True).encode()).hexdigest()
     existing = db.scalar(select(Evaluation).where(Evaluation.service_id == service_row.id, Evaluation.idempotency_hash == key))
     if existing is not None and existing.status in service.TERMINAL and existing.created_at.replace(tzinfo=None) < (now() - timedelta(hours=24)).replace(tzinfo=None):
         existing.idempotency_hash = None
@@ -101,6 +101,8 @@ def list_items(evaluationId: ResourceId, service_row: OwnedService, db: Db,
     row = service.get_run(db, service_row.id, evaluationId)
     if change and criterion is None:
         raise ApiError(400, 'VALIDATION_ERROR', 'change 필터에는 criterion이 필요합니다.')
+    if change and row.inputs.get('mode') == 'SINGLE':
+        raise ApiError(400, 'COMPARISON_REQUIRED', '전후 비교는 comparison API를 사용하세요.')
     statement = select(EvaluationItem).where(EvaluationItem.evaluation_id == row.id)
     if change:
         # Bounded to 200 items by confirmed test-set constraints; filter IDs before paging.
@@ -109,7 +111,7 @@ def list_items(evaluationId: ResourceId, service_row: OwnedService, db: Db,
         statement = statement.where(EvaluationItem.id.in_(ids))
     scope = f'evaluationItems:{row.id}:{criterion}:{change}'
     rows, next_cursor = paginate(db, statement, EvaluationItem, scope, limit, cursor)
-    return {'data': {'items': [service.item_summary(item) for item in rows], 'nextCursor': next_cursor}}
+    return {'data': {'items': [service.item_summary(item, row.inputs) for item in rows], 'nextCursor': next_cursor}}
 
 
 @router.get('/{evaluationId}/items/{itemId}', response_model=Data[EvaluationItemResponse])
@@ -119,4 +121,4 @@ def get_item(evaluationId: ResourceId, itemId: ResourceId, service_row: OwnedSer
     item = db.scalar(select(EvaluationItem).where(EvaluationItem.id == itemId, EvaluationItem.evaluation_id == row.id))
     if item is None:
         raise ApiError(404, 'RESOURCE_NOT_FOUND', '평가 문항을 찾을 수 없습니다.')
-    return {'data': {**service.item_summary(item), 'input': item.input, 'a': item.a, 'b': item.b}}
+    return {'data': {**service.item_summary(item, row.inputs), 'input': item.input, 'a': item.a, 'b': item.b}}
