@@ -2,6 +2,7 @@
 from collections import Counter
 
 from app.services.evaluations import side_names
+from app.services.condition_evaluation import normalize_condition
 
 STATUSES = ('MET', 'UNMET', 'REVIEW_REQUIRED', 'JUDGMENT_ERROR', 'EXECUTION_ERROR', 'NOT_RUN', 'IN_PROGRESS')
 
@@ -26,9 +27,11 @@ def describe_side(question, side):
     decisions = {result['conditionId']: result for result in (side or {}).get('conditionResults', [])}
     conditions = []
     issues = []
-    for condition in question.get('expectedConditions', []):
+    for source_condition in question.get('expectedConditions', []):
+        condition = normalize_condition(source_condition)
         decision = decisions.get(condition['id'])
         record = {'conditionId': condition['id'], 'criterion': condition['criterion'],
+                  'kind': condition['kind'], 'category': condition['category'], 'ruleKeys': condition['ruleKeys'],
                   'requirement': condition['requirement'],
                   'policyEvidence': {'policyVersionId': condition['policyVersionId'], 'quote': condition['sourceQuote']},
                   'judgment': decision}
