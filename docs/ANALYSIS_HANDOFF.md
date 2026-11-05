@@ -30,24 +30,30 @@
 스냅샷의 `criteria`에 점수별 설명과 통과 임계값을 보존한다.
 mode 없이 A/B를 지정한 기존 클라이언트와 기존 실행은 v1 네 기준을 유지한다.
 
-A 담당의 확정 스냅샷에서 각 질문에 다음 `expectedConditions`를 제공할 수 있다.
+A 담당의 확정 스냅샷은 다음 형식의 `expectedConditions`를 제공한다.
 
 ```json
 {
   "expectedConditions": [{
-    "id": "refund-exception",
-    "criterion": "policy",
-    "requirement": "사용한 제품의 단순 변심 반품은 불가능하다고 안내한다.",
+    "id": "서버가-발급한-조건-ID",
+    "description": "사용한 제품의 단순 변심 반품은 불가능하다고 안내한다.",
+    "kind": "required",
+    "category": "policy",
     "policyVersionId": "실제-정책-버전-ID",
-    "sourceQuote": "사용한 제품은 단순 변심 반품이 불가능합니다."
+    "ruleKeys": ["refund"],
+    "evidenceQuote": "사용한 제품은 단순 변심 반품이 불가능합니다."
   }]
 }
 ```
 
-조건 ID는 문항 안에서 고유하다. criterion은 policy/questionResolution/communicationQuality 중 하나다.
-근거는 스냅샷의 해당 정책 버전 원문에 실제 포함되어야 한다.
-A 쪽 형식 확정 전 호환을 위해 기존 질문은 expectedBehavior·policyVersionId·evidenceQuote로
-`legacy-{questionId}` 조건 하나를 구성한다. 원본 질문 레코드는 수정하지 않는다.
+조건 ID·필수/금지 구분·분류·규칙·정책 근거를 보존한다. 평가 전용 스냅샷에서는
+requirement/criterion/sourceQuote 필드로 정규화하며 A의 원본 레코드는 수정하지 않는다.
+판정은 분류별 점수에 그치지 않고 각 조건 ID에 대해 수행한다.
+
+조건 criterion은 policy/questionResolution/communicationQuality/retrieval/grounding이다.
+기대 조건이 없는 과거 확정본은 A의 legacy_conditions로 기대 행동과 각 금지 행동에
+조건을 구성한다. 조건 ID는 질문 ID와 순번에 기반한 안정적인 UUID5이며 클라이언트는
+서버가 제공한 ID를 그대로 사용한다. A 원본 질문 레코드는 수정하지 않는다.
 
 판정 모델은 `ConditionJudgement` 형식으로 세 기준과 모든 조건의 `conditionResults`를 반환한다.
 각 조건 판정은 conditionId·question_id·status·verdict·reason·evidence_refs·error를 포함한다.

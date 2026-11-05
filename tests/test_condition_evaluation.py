@@ -134,3 +134,19 @@ def test_v2_compare_rejects_filter_for_legacy_only_criterion(single_ready):
         response = client.get(path + '/items', headers=headers, params={'criterion': 'retrieval', **extra})
         assert response.status_code == 400
         assert response.json()['error']['code'] == 'INVALID_CRITERION'
+
+
+@pytest.mark.parametrize('status', ['FAILED', 'NOT_RUN', 'RUNNING', 'INTERRUPTED'])
+def test_unexecuted_and_failed_sides_preserve_every_condition_without_faking_grades(status):
+    """Transport state must not remove the frozen condition identities from the result contract."""
+    from app.schemas.evaluation import EvaluationSide
+    from app.services.condition_evaluation import CRITERIA
+    question = {'id': 'q', 'expectedConditions': [{'id': 'required'}, {'id': 'forbidden'}]}
+    inputs = {'criteria': CRITERIA}
+    side = (worker.failed_side('CALL_FAILED', '호출 실패', 'q', inputs=inputs, question=question)
+            if status == 'FAILED' else worker.pending_side(status, 'q', inputs=inputs, question=question))
+    data = EvaluationSide.model_validate(side).model_dump()
+    assert data['callStatus'] == status
+    assert set(data['criteria']) == set(CRITERIA['definitions'])
+    assert [r['conditionId'] for r in data['conditionResults']] == ['required', 'forbidden']
+    assert all(r['status'] == 'not_evaluable' and r['verdict'] is None for r in data['conditionResults'])
