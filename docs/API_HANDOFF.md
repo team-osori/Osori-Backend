@@ -170,7 +170,7 @@ OSORI_TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/osori_test?ch
 - `POST /api/invitations/{invitationId}/accept`: 초대받은 사용자가 `expectedRevision`으로 수락.
 - `PATCH /api/projects/{projectId}/members/{userId}`: admin이 `expectedRevision`, `role`로 변경.
 - `DELETE /api/projects/{projectId}/members/{userId}`: admin이 If-Match로 제거하거나 미수락 초대를 취소. 삭제 후 다음 요청부터 접근 차단.
-- `GET /api/auth/me`: `projectRoles`로 프로젝트별 실제 역할을 반환합니다. 전역 역할이나 이메일을 반환하며 미연결 기존 계정은 `email: null`입니다. `lastSeenAt`은 로그인 또는 인증된 접근 기준이며 과도한 DB 쓰기를 피하도록 최대 5분 간격으로 갱신합니다.
+- `GET /api/auth/me`: `projectRoles`로 프로젝트별 실제 역할을 반환합니다. 전역 역할은 반환하지 않으며 이메일은 반환합니다. 이메일 미연결 기존 계정은 `email: null`입니다. `lastSeenAt`은 로그인 또는 인증된 접근 기준이며 과도한 DB 쓰기를 피하도록 최대 5분 간격으로 갱신합니다.
 
 마이그레이션 `20261105_10`이 기존 데이터에 nullable 접근/삭제 시각과 리소스 deleted=false 기본값을 추가합니다. 기존 소유자 권한과 데이터는 유지합니다.
 
