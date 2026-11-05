@@ -271,19 +271,23 @@ def generate(testSetId: ResourceId, versionId: ResourceId, body: Generate, proje
         options = {'categories': body.categories} if body.categories is not None else {}
         generated = GeneratedQuestions.model_validate(generator.generate(policies=[service.policy_version_data(p) for p in sources], count=body.count, **options))
         if len(generated.questions) != body.count:
-            raise ValueError('Unexpected question count')
+            raise ApiError(502, 'GENERATION_COUNT_MISMATCH', '생성된 문항 수가 요청과 다릅니다.')
         if body.categories is not None and {q.category for q in generated.questions} != set(body.categories):
-            raise ValueError('Missing or unexpected question categories')
+            raise ApiError(502, 'GENERATION_CATEGORY_MISMATCH', '생성된 문항 유형이 요청과 다릅니다.')
         try:
-            payloads = [service.question_payload(db, project.id, version, question) for question in generated.questions]
-        except ApiError:
-            raise ValueError('Invalid generated evidence') from None
+            payloads = [service.question_payload(db, project.id, version, question, generated=True) for question in generated.questions]
+        except ApiError as exc:
+            if exc.code in ('INVALID_POLICY_REFERENCE', 'INVALID_POLICY_EVIDENCE'):
+                raise ApiError(502, 'GENERATION_EVIDENCE_INVALID', '생성된 문항의 정책 참조 또는 원문 근거가 유효하지 않습니다.') from None
+            if exc.code in ('INVALID_CONDITION_ID', 'INVALID_EXPECTED_CONDITIONS'):
+                raise ApiError(502, 'GENERATION_CONDITIONS_INVALID', '생성된 기대 조건을 확인할 수 없습니다.') from None
+            raise
     except ApiError:
         db.rollback()
         raise
     except (ValidationError, ValueError):
         db.rollback()
-        raise ApiError(502, 'INVALID_GENERATION_OUTPUT', '생성 결과의 형식 또는 근거를 확인할 수 없습니다.') from None
+        raise ApiError(502, 'GENERATION_SCHEMA_INVALID', '생성 결과의 형식을 확인할 수 없습니다.') from None
     except TimeoutError:
         db.rollback()
         raise ApiError(504, 'GENERATION_TIMEOUT', '질문 생성 시간이 초과되었습니다.') from None
