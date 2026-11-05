@@ -57,3 +57,10 @@ def test_mixed_failure_and_unavailable_results_preserve_both_signals():
         'questionResolution': {'status': 'error', 'verdict': None}}}
     result = describe_side({}, deepcopy(side))
     assert result['status'] == 'UNMET' and result['hasJudgmentError'] and result['needsReview']
+
+
+def test_failed_condition_is_visible_even_when_all_category_summaries_pass():
+    """Individual expectations remain authoritative for the overall item status."""
+    side = {'callStatus': 'SUCCEEDED', 'criteria': {'policy': {'status': 'judged', 'verdict': 'pass'}},
+            'conditionResults': [{'conditionId': 'c', 'status': 'judged', 'verdict': 'fail'}]}
+    assert describe_side({}, side)['status'] == 'UNMET'
