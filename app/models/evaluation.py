@@ -54,3 +54,17 @@ class EvaluationReview(Base):
     reason: Mapped[str] = mapped_column(String(2000))
     reviewed_by: Mapped[str] = mapped_column(ForeignKey('users.id'))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class EvaluationAnswerReview(Base):
+    """Whole-answer O/X decisions never overwrite individual condition reviews."""
+    __tablename__ = 'evaluation_answer_reviews'
+    __table_args__ = (UniqueConstraint('item_id', 'revision', name='uq_evaluation_answer_review_revision'),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey('evaluation_items.id'), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    side: Mapped[str] = mapped_column(String(1))
+    verdict: Mapped[str] = mapped_column(String(20))
+    reason: Mapped[str] = mapped_column(String(2000))
+    reviewed_by: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

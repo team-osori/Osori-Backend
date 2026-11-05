@@ -105,12 +105,22 @@ def screen_status(question, side):
     return 'INCORRECT' if any(result['verdict'] == 'fail' for result in results) else 'CORRECT'
 
 
-def item_analysis(run, item, reviews=None):
+def item_analysis(run, item, reviews=None, answer_reviews=None):
     reviews = reviews or {}
     result = {}
     for name in side_names(run.inputs):
         detail = describe_side(item.input, getattr(item, name),
             [value for (item_id, side, condition_id), value in reviews.items() if item_id == item.id and side == name])
+        overall = (answer_reviews or {}).get((item.id, name))
+        base_screen_status = detail['screenStatus']
+        conflict = bool(overall and base_screen_status in ('CORRECT', 'INCORRECT')
+                        and overall['verdict'] in ('pass', 'fail')
+                        and (overall['verdict'] == 'pass') != (base_screen_status == 'CORRECT'))
+        if conflict or (overall and overall['verdict'] == 'not_evaluable'
+                        and base_screen_status in ('CORRECT', 'INCORRECT')):
+            detail['screenStatus'] = 'REVIEW_REQUIRED'
+            detail['needsReview'] = True
+        detail.update(answerReview=overall, reviewConflict=conflict, derivedScreenStatus=base_screen_status)
         causes = cause_analysis(run.inputs, item.input, name, getattr(item, name))
         failed = {condition['conditionId'] for condition in detail['conditions']
                   if condition['judgment'] and condition['judgment']['verdict'] == 'fail'}
@@ -189,10 +199,10 @@ def cause_analysis(inputs, question, name, side):
             'confirmedCause': None, 'facts': facts, 'hypotheses': hypotheses, 'limitations': limitations}
 
 
-def summarize(run, items, reviews=None):
+def summarize(run, items, reviews=None, answer_reviews=None):
     result = {}
     # Compute once per item, then partition by side. All counts precede pagination.
-    analyses = [item_analysis(run, item, reviews) for item in items]
+    analyses = [item_analysis(run, item, reviews, answer_reviews) for item in items]
     for name in side_names(run.inputs):
         statuses = Counter()
         kinds = Counter()
