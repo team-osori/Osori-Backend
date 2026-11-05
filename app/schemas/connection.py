@@ -51,6 +51,9 @@ class ConnectionPut(BaseModel):
     timeoutMs: Annotated[int, Field(ge=100, le=60_000, strict=True)]
     maxRetries: Annotated[int, Field(ge=0, le=2, strict=True)]
     retrySafe: bool
+    llmKeyHeaderName: Annotated[str | None, Field(max_length=100, description=(
+        '평가 대상 서비스가 답변 생성에 쓰는 AI API 키를 실어 보낼 헤더 이름(예: X-OpenAI-Key). '
+        '키 값은 PUT /connection/llm-secret으로 따로 등록합니다. 생략하면 보내지 않습니다.'))] = None
 
     @field_validator('executionMode', mode='before')
     @classmethod
@@ -74,9 +77,17 @@ class ConnectionPut(BaseModel):
                 raise ValueError('인증정보는 secret API로 저장합니다.')
             if lower in ('x-api-key', 'api-key', 'apikey', 'x-auth-token'):
                 raise ValueError('인증정보는 secret API로 저장합니다.')
+            if self.llmKeyHeaderName and lower == self.llmKeyHeaderName.lower():
+                raise ValueError('AI API 키는 llm-secret API로 저장합니다.')
             if lower == 'content-type' and value.lower() != 'application/json':
                 raise ValueError('JSON 요청만 지원합니다.')
             seen.add(lower)
+        if self.llmKeyHeaderName is not None:
+            llm = header_name(self.llmKeyHeaderName).lower()
+            if llm in RESERVED_HEADERS | {'content-type', 'accept'}:
+                raise ValueError('사용할 수 없는 AI API 키 헤더입니다.')
+            if self.auth.headerName and llm == self.auth.headerName.lower():
+                raise ValueError('AI API 키 헤더는 인증 헤더와 달라야 합니다.')
         encoded = json.dumps(self.requestTemplate, allow_nan=False)
         if len(encoded.encode()) > 256_000:
             raise ValueError('요청 템플릿이 너무 큽니다.')
@@ -147,6 +158,8 @@ class ConnectionResponse(BaseModel):
     retrievalPointer: str | None = None
     citationsPointer: str | None = None
     auth: AuthResponse
+    llmKeyHeaderName: str | None = None
+    llmKeyConfigured: bool = False
     timeoutMs: int
     maxRetries: int
     retrySafe: bool
@@ -159,6 +172,13 @@ class SecretResponse(BaseModel):
     connectionId: str
     revision: int
     secretConfigured: bool
+    verifiedRevision: int | None
+
+
+class LlmSecretResponse(BaseModel):
+    connectionId: str
+    revision: int
+    llmKeyConfigured: bool
     verifiedRevision: int | None
 
 

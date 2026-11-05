@@ -12,7 +12,7 @@ from sqlalchemy.exc import OperationalError
 from app.core.database import SessionLocal
 from app.core.errors import ApiError
 from app.core.concurrency import is_write_conflict
-from app.core.secrets import decrypt_secret
+from app.core.secrets import unpack_secrets
 from app.models import auth, project, prompt  # noqa: F401: register referenced tables
 from app.models.connection import Connection, ConnectionTest
 from app.models.project import Chatbot, Project
@@ -62,10 +62,10 @@ async def process_one(factory=SessionLocal, *, sender=None) -> bool:
             if c is None or c.revision != job.connection_revision:
                 raise ApiError(409, 'CONNECTION_CHANGED', '접수 후 연동 설정이 변경되었습니다.')
             config = deepcopy(c.config)
-            secret = decrypt_secret(c.secret_ciphertext) if c.secret_ciphertext else None
+            secret, llm_secret = unpack_secrets(c.secret_ciphertext)
             content = get_version(db, job.service_id, job.prompt_version_id, allow_deleted=True).content if job.prompt_version_id else None
             question = job.question
-        result = await execute_chatbot(config, question, content, secret, sender=sender)
+        result = await execute_chatbot(config, question, content, secret, sender=sender, llm_secret=llm_secret)
     except ApiError as exc:
         result = GatewayResult(None, 0, 0, {'code': exc.code, 'message': exc.message})
     except Exception as exc:

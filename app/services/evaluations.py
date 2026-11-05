@@ -3,6 +3,7 @@ from copy import deepcopy
 from sqlalchemy import select
 
 from app.core.errors import ApiError
+from app.core.secrets import unpack_secrets
 from app.models.connection import Connection
 from app.models.evaluation import Evaluation, EvaluationItem
 from app.services.evaluation_judge import CRITERIA
@@ -39,7 +40,7 @@ def build_inputs(db, service, body, judge):
     inject_prompt = mode == 'COMPARE' or body.promptVersionId is not None
     if inject_prompt and connection.config['executionMode'] != 'PROMPT_BODY':
         raise ApiError(409, 'UNSUPPORTED_EXECUTION_MODE', 'A/B 평가는 PROMPT_BODY 모드가 필요합니다.')
-    if connection.config['auth']['type'] != 'NONE' and not connection.secret_ciphertext:
+    if connection.config['auth']['type'] != 'NONE' and unpack_secrets(connection.secret_ciphertext)[0] is None:
         raise ApiError(409, 'CONNECTION_SECRET_REQUIRED', '기업 챗봇 인증정보를 등록하세요.')
     if mode == 'COMPARE':
         a, b = select_ab_versions(db, service.id, body.aPromptVersionId, body.bPromptVersionId)
