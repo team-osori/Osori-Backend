@@ -1,6 +1,7 @@
 """Run release preflight, DB backup, and migrations without emitting credentials."""
 import argparse
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +13,12 @@ from sqlalchemy.engine import make_url
 
 
 def preflight():
+    # Fail before stopping the current release if OCR dependencies are missing.
+    if not shutil.which("pdftoppm") or not shutil.which("tesseract"):
+        raise ValueError("Install poppler-utils and tesseract-ocr with kor/eng language data")
+    languages = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True, check=True, timeout=5)
+    if not {"kor", "eng"} <= set(languages.stdout.split()):
+        raise ValueError("Install tesseract-ocr-kor and tesseract-ocr-eng")
     url = make_url(os.environ['DATABASE_URL'])
     if url.drivername != 'mysql+pymysql' or url.host != '127.0.0.1' or url.database != 'osori':
         raise ValueError('Expected the local Osori MySQL database')

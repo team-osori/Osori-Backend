@@ -47,7 +47,7 @@ jobs:
       - name: Validate deployment scripts
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq shellcheck
+          sudo apt-get install -y -qq shellcheck poppler-utils tesseract-ocr tesseract-ocr-kor tesseract-ocr-eng
           bash -n deploy/bootstrap.sh deploy/deploy.sh
           shellcheck deploy/bootstrap.sh deploy/deploy.sh
           .venv/bin/python -m compileall -q app deploy

@@ -6,7 +6,7 @@ umask 027
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq python3.12-venv mysql-server curl ca-certificates
+apt-get install -y -qq python3.12-venv mysql-server curl ca-certificates poppler-utils tesseract-ocr tesseract-ocr-kor tesseract-ocr-eng
 
 if ! id osori >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/osori-backend --create-home --shell /usr/sbin/nologin osori
