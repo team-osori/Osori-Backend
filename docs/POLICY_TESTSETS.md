@@ -217,3 +217,7 @@ macOS 개발 환경은 `brew install poppler tesseract tesseract-lang`을 사용
 ```
 
 원문 불일치는 `field=rules.N.sourceQuote`, `code=POLICY_RULE_SOURCE_MISMATCH`입니다. 실패한 정책 생성·버전 생성은 내용·revision을 변경하지 않습니다. OpenAPI에도 동일한 입력 제약을 기재합니다. 문단을 자동으로 규칙으로 나누는 클라이언트는 저장 전에 사람이 규칙의 의미와 원문 근거를 검토해야 합니다.
+
+## #27 시험지 가져오기 확장
+
+CSV 가져오기, 신규 유형·유형별 생성 개수, 모범 답안, 미연결 근거 및 승인 규칙은 [시험지·CSV 연동 계약](testset-import-contract.md)을 참고하세요. 기존 API와 확정 스냅샷 v2는 유지됩니다.
