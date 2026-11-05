@@ -153,15 +153,32 @@ class ExpectedCondition(Input):
     evidenceQuote: Annotated[str, StringConstraints(min_length=1, max_length=10000)]
 
 
+QuestionCategory = Literal['normal', 'ambiguous', 'missing_document', 'policy_trap', 'exception', 'boundary']
+
+
 class QuestionBody(Input):
     question: Text
-    expectedBehavior: Text
+    expectedBehavior: Text | None = None
+    modelAnswer: Text | None = None
     forbiddenBehaviors: Annotated[list[Text], Field(max_length=20)] = []
-    policyVersionId: Id
-    ruleKeys: Annotated[list[Id], Field(min_length=1, max_length=100)]
-    evidenceQuote: Annotated[str, StringConstraints(min_length=1, max_length=10000)]
-    category: Literal['normal', 'exception', 'boundary', 'ambiguous'] = 'normal'
+    policyVersionId: Id | None = None
+    ruleKeys: Annotated[list[Id], Field(max_length=100)] = []
+    evidenceQuote: Annotated[str | None, StringConstraints(min_length=1, max_length=10000)] = None
+    category: QuestionCategory = 'normal'
     expectedConditions: Annotated[list[ExpectedCondition] | None, Field(min_length=1, max_length=30)] = None
+
+    @model_validator(mode='after')
+    def answer_and_evidence(self):
+        if self.expectedBehavior is None:
+            if self.modelAnswer is None:
+                raise ValueError('기대 행동 또는 모범 답안이 필요합니다.')
+            self.expectedBehavior = self.modelAnswer
+        linked = (self.policyVersionId is not None, bool(self.ruleKeys), self.evidenceQuote is not None)
+        if any(linked) and not all(linked):
+            raise ValueError('정책 버전·규칙·근거 원문을 함께 연결하세요.')
+        if not all(linked) and self.expectedConditions is not None:
+            raise ValueError('조건을 작성하기 전에 문항 근거를 연결하세요.')
+        return self
 
     @field_validator('forbiddenBehaviors')
     @classmethod
@@ -183,11 +200,18 @@ class Review(Revision):
 
 class Generate(Revision):
     count: Annotated[int, Field(strict=True, ge=1, le=50)] = 10
-    categories: Annotated[list[Literal['normal', 'exception', 'boundary', 'ambiguous']] | None,
-                          Field(min_length=1, max_length=4)] = None
+    categories: Annotated[list[QuestionCategory] | None, Field(min_length=1, max_length=6)] = None
+    categoryCounts: dict[QuestionCategory, Annotated[int, Field(strict=True, ge=0, le=50)]] | None = None
 
     @model_validator(mode='after')
     def category_coverage(self):
+        if self.categoryCounts is not None:
+            total = sum(self.categoryCounts.values())
+            if self.categories is not None or not 1 <= total <= 50:
+                raise ValueError('categoryCounts 합계는 1~50이며 categories와 함께 보낼 수 없습니다.')
+            if 'count' in self.model_fields_set and self.count != total:
+                raise ValueError('count는 유형별 개수의 합계와 같아야 합니다.')
+            self.count = total
         if self.categories is not None:
             if len(set(self.categories)) != len(self.categories) or self.count < len(self.categories):
                 raise ValueError('유형은 중복 없이 선택하고 유형 수 이상의 문항을 요청하세요.')
@@ -263,6 +287,19 @@ class TestSetVersionSummary(BaseModel):
 
 class TestSetVersionOut(TestSetVersionSummary):
     questions: list[QuestionOut]
+    questionCount: int = 0
+    approvedCount: int = 0
+
+    @model_validator(mode='before')
+    @classmethod
+    def legacy_cached_counts(cls, value):
+        # Generation replays saved before #27 do not contain the additive counters.
+        if isinstance(value, dict) and 'questions' in value:
+            rows = value['questions']
+            value = {**value}
+            value.setdefault('questionCount', len(rows))
+            value.setdefault('approvedCount', sum(q.get('reviewStatus') == 'approved' and q.get('reviewedBy') is not None for q in rows))
+        return value
 
 
 class TestSetDetail(BaseModel):
