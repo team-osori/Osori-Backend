@@ -161,7 +161,7 @@ def policy_data(row):
 def policy_version_data(row):
     """Return original policy content and its immutable compliance-rule definitions."""
     return {'id': row.id, 'policyId': row.policy_id, 'version': row.version, 'content': row.content,
-            'rules': row.rules, 'createdAt': iso(row.created_at)}
+            'rules': row.rules, 'sourceDocument': row.source_document, 'createdAt': iso(row.created_at)}
 
 
 def testset_data(row):

@@ -27,6 +27,7 @@ class PolicyVersion(Base):
     version: Mapped[int] = mapped_column(Integer)
     content: Mapped[str] = mapped_column(Text().with_variant(MEDIUMTEXT(), 'mysql'))
     rules: Mapped[list] = mapped_column(JSON)
+    source_document: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 

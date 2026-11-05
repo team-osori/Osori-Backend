@@ -1,7 +1,10 @@
+import hashlib
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationInfo, field_validator, model_validator
 from pydantic_core import PydanticCustomError
+
+from app.schemas.policy_document import DocumentSource
 
 Text = Annotated[str, StringConstraints(min_length=1, max_length=2000)]
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
@@ -29,9 +32,27 @@ class Rule(Input):
 
 
 class PolicyBody(Input):
+    sourceDocument: DocumentSource | None = None
+
     content: Annotated[str, StringConstraints(min_length=1, max_length=100000)]
     rules: Annotated[list[Rule], Field(min_length=1, max_length=100,
-        description='클라이언트가 검토한 규칙 1~100개가 필수입니다. 자동 규칙 추출·파일 업로드는 지원하지 않습니다.')]
+        description='클라이언트가 검토한 규칙 1~100개가 필수입니다.')]
+
+    @model_validator(mode='after')
+    def source_matches_content(self):
+        source = self.sourceDocument
+        if source is None:
+            return self
+        if hashlib.sha256(self.content.encode()).hexdigest() != source.contentHash:
+            raise ValueError('원문을 수정했다면 sourceDocument를 제거하고 저장하세요.')
+        end = 0
+        for chunk in source.chunks:
+            if chunk.endOffset > len(self.content) or self.content[end:chunk.startOffset].strip():
+                raise ValueError('원문과 청크 범위가 일치하지 않습니다.')
+            end = chunk.endOffset
+        if self.content[end:].strip():
+            raise ValueError('원문과 청크 범위가 일치하지 않습니다.')
+        return self
 
     @field_validator('rules')
     @classmethod
@@ -59,6 +80,29 @@ class PolicyDraft(PolicyBody):
     name: Name
     status: Literal['draft'] = 'draft'
     persisted: Literal[False] = False
+
+
+class ImportFailure(BaseModel):
+    code: str
+    message: str
+    httpStatus: int
+    retryAfter: str | None = None
+
+
+class ImportSuccess(BaseModel):
+    filename: str
+    status: Literal['draft'] = 'draft'
+    draft: PolicyDraft
+
+
+class ImportFailed(BaseModel):
+    filename: str
+    status: Literal['failed'] = 'failed'
+    error: ImportFailure
+
+
+class PolicyImports(BaseModel):
+    items: list[ImportSuccess | ImportFailed]
 
 
 class PolicyVersionCreate(PolicyBody):
@@ -163,6 +207,7 @@ class PolicyOut(BaseModel):
 
 
 class PolicyVersionOut(BaseModel):
+    sourceDocument: DocumentSource | None = None
     id: str
     policyId: str
     version: int

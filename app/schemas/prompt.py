@@ -21,7 +21,7 @@ class PromptContent(BaseModel):
 
 
 class PromptCreate(PromptContent):
-    name: Annotated[str, Field(min_length=1, max_length=100)]
+    name: Annotated[str, Field(min_length=1, max_length=100)] = '기본 프롬프트'
 
     @field_validator('name', mode='before')
     @classmethod

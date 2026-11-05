@@ -89,7 +89,7 @@ example.com 주소는 설명용이며 실제 기업 테스트 API로 교체해�
 
 | ID | Method / 하위 경로 | 동작 |
 | --- | --- | --- |
-| PR-01 | `POST /prompts` | name·content 및 선택 label/changeNote/externalVersionRef. 첫 버전 포함 201 |
+| PR-01 | `POST /prompts` | content 필수. name 생략 시 `기본 프롬프트` (명시한 공백 이름은 거절). 선택 label/changeNote/externalVersionRef. 첫 버전 포함 201 |
 | PR-02 | `GET /prompts` | 최신 생성 순 목록. limit 1~100(기본 20), cursor |
 | PR-03 | `GET /prompts/{promptId}` | 최신 프롬프트·currentVersion |
 | PR-04 | `POST /prompts/{promptId}/versions` | baseVersionId·content 및 선택 메타데이터. 새 버전 201 |

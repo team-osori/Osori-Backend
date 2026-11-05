@@ -18,19 +18,20 @@ class AuthRequestLimits:
             return
         headers = dict(scope['headers'])
         content_type = headers.get(b'content-type', b'').split(b';', 1)[0].strip().lower()
-        upload = scope['method'] == 'POST' and re.fullmatch(r'/api/projects/[A-Za-z0-9_-]+/policies/import', scope['path'])
+        upload = scope['method'] == 'POST' and re.fullmatch(r'/api/projects/[A-Za-z0-9_-]+/policies/imports?', scope['path'])
         allowed_type = b'multipart/form-data' if upload else b'application/json'
         if content_type != allowed_type:
             await error_response(scope, 415, 'UNSUPPORTED_MEDIA_TYPE',
                 'multipart/form-data 요청이 필요합니다.' if upload else 'JSON 요청이 필요합니다.')(scope, receive, send)
             return
+        upload_limit = (51 if scope['path'].endswith('/imports') else 11) * 1024 * 1024
         body = bytearray()
         while True:
             message = await receive()
             if message['type'] == 'http.disconnect':
                 return
             body.extend(message.get('body', b''))
-            if len(body) > (11 * 1024 * 1024 if upload else self.max_bytes):
+            if len(body) > (upload_limit if upload else self.max_bytes):
                 await error_response(scope, 413, 'PAYLOAD_TOO_LARGE', '요청 크기가 너무 큽니다.')(scope, receive, send)
                 return
             if not message.get('more_body', False):
