@@ -96,9 +96,9 @@ def cause_analysis(inputs, question, name, side):
              'selectedPromptVersionId': prompt['id'] if prompt else None,
              'promptApplicationVerified': inputs.get('comparisonAssurance', {}).get('promptAppliedVerified', False),
              'conditionSources': []}
-    for source_condition in question.get('expectedConditions', []):
-        condition = normalize_condition(source_condition)
-        matches = None if documents is None else [doc['id'] for doc in documents if condition['sourceQuote'] in doc['text']]
+    for condition in question.get('expectedConditions', []):
+        quote = condition['sourceQuote'] if 'sourceQuote' in condition else condition['evidenceQuote']
+        matches = None if documents is None else [doc['id'] for doc in documents if quote in doc['text']]
         facts['conditionSources'].append({'conditionId': condition['id'],
                                          'documentsContainingExactQuote': matches})
     limitations = ['CAUSAL_ISOLATION_NOT_PERFORMED', 'EXTERNAL_MODEL_SETTINGS_UNVERIFIED']
