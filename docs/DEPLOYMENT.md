@@ -43,13 +43,13 @@ production 환경은 main 브랜치의 배포만 허용합니다.
 | Secret | DEPLOY_SSH_KEY | GitHub Actions 전용 SSH 개인 키 |
 | Secret | DEPLOY_KNOWN_HOSTS | 최초 SSH 연결에서 확인한 서버 공개 호스트 키 |
 
-팀에서 지급한 PEM은 초기 SSH 접속에만 사용합니다. 그 내용을 출력하거나 GitHub에 업로드하지 않습니다. CI 전용 키는 서버 authorized_keys에서 `restrict,command="/usr/local/bin/osori-ci-entrypoint"`로 제한하며, `deploy {40자리 SHA} {runId} {attempt}` 외의 명령을 거부합니다. 일반 셸·포트 포워딩·PTY를 허용하지 않습니다. 이 키는 배포 코드를 변경할 수 있는 권한이 있으므로 production 환경과 main 쓰기 권한을 가진 팀원만 관리해야 합니다.
+팀에서 지급한 PEM은 초기 SSH 접속에만 사용합니다. 그 내용을 출력하거나 GitHub에 업로드하지 않습니다. CI 전용 키는 서버 authorized_keys에서 `restrict,command="/usr/local/bin/osori-ci-entrypoint"`로 제한하며, `deploy {40자리 SHA} {runId} {attempt}`와 `configure-question-generation` 외의 명령을 거부합니다. 일반 셸·포트 포워딩·PTY를 허용하지 않습니다. 이 키는 배포 코드를 변경할 수 있는 권한이 있으므로 production 환경과 main 쓰기 권한을 가진 팀원만 관리해야 합니다.
 
 ## 처음 구성할 때
 
 먼저 서버 상태와 포트 사용 여부를 확인합니다. 저장소의 deploy 디렉터리를 서버에 복사하고 `sudo bash deploy/bootstrap.sh`를 한 번 실행합니다. Ubuntu 패키지·로컬 DB·서비스 사용자·배포 도구를 준비합니다. 기존 osori DB가 있는데 환경 파일이 없으면 자동으로 덮어쓰지 않고 중단합니다.
 
-CI 전용 키의 공개 키만 ubuntu의 authorized_keys에 위 제한 옵션과 함께 등록하고, GitHub production 환경에 키와 호스트 키를 비밀값으로 등록합니다. 배포 워크플로에서는 런타임 비밀 설정과 팀 PEM이 아닌 별도 CI 키만 사용합니다. 서버 패키지는 bootstrap 이후 자동 배포마다 다시 설치하지 않습니다.
+CI 전용 키의 공개 키만 ubuntu의 authorized_keys에 위 제한 옵션과 함께 등록하고, GitHub production 환경에 키와 호스트 키를 비밀값으로 등록합니다. 배포 워크플로는 팀 PEM 대신 별도 CI 키를 사용하며, 질문 생성 전용 Secret을 별도 제한 명령의 표준입력으로 전달합니다. 서버 패키지는 bootstrap 이후 자동 배포마다 다시 설치하지 않습니다.
 
 ## 배포 동작과 실패 처리
 
@@ -122,3 +122,19 @@ docker run --rm --network none -v "$PWD:/source:ro" \
   python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30 \
   python -I /source/tests/deployment_isolation_check.py
 ```
+
+## OpenAI 질문 생성 키
+
+production 환경 Secret `QUESTION_GENERATION_API_KEY`와 Variable `QUESTION_GENERATION_MODEL`을 사용합니다. 모델 기본 배포 설정은 `gpt-4.1-mini-2025-04-14`입니다. 키는 repository 파일·artifact·명령줄 인자에 넣지 않습니다. 테스트/PR job에는 키를 주입하지 않으며 main 배포 job의 설정 동기화 step에서만 사용합니다.
+
+`deploy/question_generation_env.py emit`의 JSON 출력을 SSH 표준입력으로 직접 전달합니다. `configure-question-generation` 제한 명령은 root 소유 helper로 `/etc/osori-backend.env`의 질문 생성 provider/model/key 세 항목만 원자적으로 갱신합니다. 기존 DB 비밀번호·암호화 키를 보존하며 파일은 root:osori 640입니다. 새 릴리스 배포가 제한 명령 도구를 설치한 다음 설정을 동기화합니다. 설정이 변경된 경우에만 API를 재시작해 적용하고, 같으면 재시작하지 않습니다. 연결/평가 워커는 키 동기화로 재시작하지 않습니다.
+
+기존 서버에 키만 먼저 준비하려면 관리자 세션에서 아래 도구를 설치할 수 있습니다. 일반 배포에서는 새 릴리스가 도구를 설치한 뒤 키를 동기화하므로 이 수동 단계가 필요하지 않습니다. 도구 설치만으로는 애플리케이션 코드·DB·프로세스를 변경하지 않습니다.
+
+```bash
+sudo install -m 0644 deploy/question_generation_env.py /usr/local/lib/osori/question_generation_env.py
+sudo install -m 0755 deploy/deploy.sh /usr/local/sbin/osori-deploy
+sudo install -m 0755 deploy/ssh_entrypoint.py /usr/local/bin/osori-ci-entrypoint
+```
+
+Secret이나 모델 변수가 비어 있거나 유효하지 않으면 설정 동기화가 실패하고 Actions도 실패합니다. 릴리스 배포 후 수행되므로 이 경우 이미 배포된 앱은 유지되며 기존 키가 있으면 그대로 사용합니다. 키 변경은 GitHub production Secret을 교체한 뒤 main 배포를 실행하면 반영됩니다. 키 만료 시 API는 GENERATION_AUTH_FAILED를 반환하며 키 갱신이 필요합니다. 만료된 키가 자동 재발급되지는 않습니다. 실패한 앱 배포는 기존 앱을 복원하지만 별도 동기화한 질문 생성 설정은 유지합니다.

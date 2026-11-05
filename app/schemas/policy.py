@@ -78,6 +78,16 @@ class NewDraft(Revision):
         return value
 
 
+class ExpectedCondition(Input):
+    id: Id | None = None
+    description: Text
+    kind: Literal['required', 'forbidden'] = 'required'
+    category: Literal['retrieval', 'grounding', 'response', 'policy'] = 'policy'
+    policyVersionId: Id
+    ruleKeys: Annotated[list[Id], Field(min_length=1, max_length=100)]
+    evidenceQuote: Annotated[str, StringConstraints(min_length=1, max_length=10000)]
+
+
 class QuestionBody(Input):
     question: Text
     expectedBehavior: Text
@@ -85,7 +95,8 @@ class QuestionBody(Input):
     policyVersionId: Id
     ruleKeys: Annotated[list[Id], Field(min_length=1, max_length=100)]
     evidenceQuote: Annotated[str, StringConstraints(min_length=1, max_length=10000)]
-    category: Literal['normal', 'exception', 'ambiguous'] = 'normal'
+    category: Literal['normal', 'exception', 'boundary', 'ambiguous'] = 'normal'
+    expectedConditions: Annotated[list[ExpectedCondition] | None, Field(min_length=1, max_length=30)] = None
 
     @field_validator('forbiddenBehaviors')
     @classmethod
@@ -97,7 +108,7 @@ class QuestionBody(Input):
 
 
 class QuestionWrite(QuestionBody, Revision):
-    pass
+    changeNote: Annotated[str | None, StringConstraints(max_length=2000)] = None
 
 
 class Review(Revision):
@@ -106,7 +117,16 @@ class Review(Revision):
 
 
 class Generate(Revision):
-    count: Annotated[int, Field(ge=1, le=50)] = 10
+    count: Annotated[int, Field(strict=True, ge=1, le=50)] = 10
+    categories: Annotated[list[Literal['normal', 'exception', 'boundary', 'ambiguous']] | None,
+                          Field(min_length=1, max_length=4)] = None
+
+    @model_validator(mode='after')
+    def category_coverage(self):
+        if self.categories is not None:
+            if len(set(self.categories)) != len(self.categories) or self.count < len(self.categories):
+                raise ValueError('유형은 중복 없이 선택하고 유형 수 이상의 문항을 요청하세요.')
+        return self
 
 
 class GeneratedQuestions(Input):
@@ -148,6 +168,19 @@ class QuestionOut(QuestionBody):
     reviewStatus: Literal['pending', 'approved', 'rejected']
     reviewedBy: str | None
     reviewNote: str | None
+    reviewedAt: str | None = None
+
+
+class QuestionHistoryOut(BaseModel):
+    id: str
+    questionId: str
+    versionRevision: int
+    action: Literal['created', 'generated', 'copied', 'edited', 'reviewed', 'deleted']
+    actorId: str
+    note: str | None
+    before: dict | None
+    after: dict | None
+    createdAt: str
 
 
 class TestSetVersionSummary(BaseModel):
