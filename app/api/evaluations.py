@@ -105,6 +105,8 @@ def list_items(evaluationId: ResourceId, service_row: OwnedService, db: Db,
     row = service.get_run(db, service_row.id, evaluationId)
     if change and criterion is None:
         raise ApiError(400, 'VALIDATION_ERROR', 'change 필터에는 criterion이 필요합니다.')
+    if criterion and criterion not in row.inputs['criteria']['definitions']:
+        raise ApiError(400, 'INVALID_CRITERION', '이 평가에 포함된 채점 항목을 선택하세요.')
     if change and row.inputs.get('mode') == 'SINGLE':
         raise ApiError(400, 'COMPARISON_REQUIRED', '전후 비교는 comparison API를 사용하세요.')
     statement = select(EvaluationItem).where(EvaluationItem.evaluation_id == row.id)
