@@ -2,7 +2,7 @@
 
 ## 이번 범위
 
-텍스트 정책 원문과 규칙을 저장하고, 정책 버전을 근거로 질문·기대 행동·금지 행동을 작성하여 사람이 검토·확정하는 기능입니다. PDF 업로드는 이번 범위에 포함하지 않습니다.
+텍스트 정책 원문과 규칙을 저장하고, 정책 버전을 근거로 질문·기대 행동·금지 행동을 작성하여 사람이 검토·확정하는 기능입니다. PDF/DOCX/TXT/MD 업로드와 한국어·영어 OCR 초안을 지원합니다.
 
 Bedrock 질문 생성 어댑터를 연결했습니다. 기본 모델은 Claude Haiku 4.5이며 서버 IAM 역할을 사용합니다. `QUESTION_GENERATION_PROVIDER=bedrock`으로 활성화하고 개인 API 키를 사용하지 않습니다. 미설정 시 `503 GENERATION_NOT_CONFIGURED`이며 가짜 질문은 만들지 않습니다. 설정은 [Bedrock 연동](BEDROCK_SETUP.md), 조건·이력 계약은 [A 기능 인계](QUESTION_GENERATION_HANDOFF.md)에 있습니다.
 
@@ -163,7 +163,34 @@ OSORI_TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/osori_test?ch
 
 `POST /api/projects/{projectId}/policies`는 `name/content/rules`를 보내면 기존처럼 201과 저장된 정책을 반환합니다. `rules`를 생략하거나 null로 보내면 생성 모델이 규칙을 추출하고 **200과 미저장 초안**(`name/content/rules/status: draft/persisted: false`)을 반환합니다. 원문과 규칙을 검토·수정한 뒤 `name/content/rules`만 다시 보내 저장하세요. 정책 버전 생성에는 기존처럼 rules가 필수입니다. 질문 검토·확정은 별도의 draft 테스트셋에서 진행합니다.
 
-`POST /api/projects/{projectId}/policies/import`는 multipart의 `name`과 `file`을 받습니다. PDF/DOCX/UTF-8 TXT/MD를 텍스트로 추출한 후 동일한 규칙 초안을 반환합니다. 업로드는 10MiB, PDF는 50페이지, 추출 원문은 100,000자까지입니다. 텍스트를 포함하지 않은 스캔 PDF는 `DOCUMENT_TEXT_NOT_FOUND`, 암호화 PDF는 `DOCUMENT_ENCRYPTED`(400)입니다. OCR은 지원하지 않습니다. 파일은 보관하지 않으며 PDF/DOCX 파싱은 20초 제한 subprocess에서 수행합니다(Linux: 512MiB 메모리·15초 CPU 제한).
+`POST /api/projects/{projectId}/policies/import`는 multipart의 `name`, `file`, 선택 `ocrMode=auto|force`를 받습니다. PDF/DOCX/UTF-8 TXT/MD를 텍스트로 추출한 후 규칙 초안을 반환합니다. 업로드는 10MiB, PDF는 50페이지, 추출 원문은 100,000자까지입니다.
+
+- `auto`(기본값): 일반 텍스트 추출을 먼저 수행하고, 텍스트가 없는 PDF 페이지만 Poppler로 렌더링해 Tesseract `kor+eng`으로 인식합니다. 텍스트 레이어를 읽지 못한 페이지도 OCR을 시도합니다. 텍스트와 이미지가 함께 있으면 텍스트를 사용하고 `imageTextPages`에 표시합니다. 스캔 본문이 누락되지 않았는지 검토하고 필요하면 `force`로 재처리하세요.
+- `force`: 모든 PDF 페이지에 OCR을 적용합니다. 손상된 텍스트 레이어가 있는 문서를 다시 처리할 때 사용합니다. 다른 파일 형식에는 영향이 없습니다.
+- OCR 결과는 오인식할 수 있으므로 원문과 규칙을 검토한 뒤 저장합니다. 표·다단·회전된 문서의 읽기 순서나 정확도를 보장하지 않습니다. OCR은 로컬에서 실행하지만 이후 규칙 추출은 기존 설정된 모델 제공자를 사용합니다.
+- 초안의 `sourceDocument`는 `documentId`(파일 SHA-256 기반), `filename`, `contentHash`, `pageCount`(PDF 이외 null), `chunkCount`, `chunks`, `ocrPages`, `emptyPages`, `imageTextPages`를 포함합니다.
+- 청크는 페이지를 넘지 않는 최대 2,000자 구간입니다. `index`/`pageNumber`는 1부터, `startOffset`/`endOffset`은 반환된 `content`의 Unicode 코드 포인트 기준 `[start,end)`입니다. JavaScript에서는 `[...content].slice(start,end).join('')`로 추출합니다. 문서 내 위치 키는 `(documentId, index)`입니다. 청크는 화면 근거 표시용이며 검색 인덱스가 아닙니다.
+- OCR 후 빈 페이지는 `emptyPages`에 표시하며 페이지 번호를 당기지 않습니다. 읽을 수 있는 내용이 전혀 없으면 `DOCUMENT_TEXT_NOT_FOUND`(400), 암호화 PDF는 `DOCUMENT_ENCRYPTED`(400)입니다.
+- 검토 후 `name/content/rules/sourceDocument`를 기존 정책 생성 API로 보내면 첫 버전에 저장합니다. 이후 버전 조회에도 위치 정보가 반환됩니다. 원문을 수정했다면 기존 위치는 유효하지 않으므로 `sourceDocument`를 제거/null로 보내세요. 해시·범위 불일치는 검증 오류로 거절됩니다. 위치 정보는 클라이언트가 반환한 검토용 메타데이터이며 원본 파일의 진위 증명이 아닙니다. 기존 정책 버전은 null입니다.
+
+여러 파일은 `POST /api/projects/{projectId}/policies/imports`에 반복된 `files` 필드(1~5개)와 `ocrMode`를 보냅니다. HTTP 200의 `data.items`는 입력 순서를 유지하며 파일마다 `filename/status=draft/draft` 또는 `filename/status=failed/error`를 반환합니다. 오류에는 `code/message/httpStatus/retryAfter`가 포함됩니다. 일부 파일의 실패가 다른 파일의 초안을 취소하지 않습니다. 성공해도 저장되지 않으므로 각 초안을 개별 검토·저장하세요. 처리 중 상태는 프론트에서 관리하며, 즉시 개별 진행률이 필요하면 단일 `/import`를 파일별로 호출하세요. 배치는 순차 처리하므로 최대 5개 파일의 추출·모델 호출 시간을 고려해 클라이언트/프록시 제한 시간을 설정해야 합니다.
+
+추출 요청은 사용자별 기존 rate limit(10회/윈도)에 포함되고 실패한 파일도 계산합니다. API 프로세스마다 최대 2개 문서를 동시 추출하며 초과하면 `DOCUMENT_EXTRACTION_BUSY`(503, 재시도 5초)를 반환합니다. 임시 PDF·이미지는 처리 후 제거하고 보관하지 않습니다. 추출 전체는 60초, 페이지 렌더링+OCR은 15초, 이미지 긴 변은 2,400px, 파일 출력은 16MiB로 제한합니다. Linux에서는 프로세스별 512MiB 메모리·45초 CPU를 제한하고, 전체 시간 초과 시 OCR 하위 프로세스까지 종료합니다.
+
+`DOCUMENT_OCR_UNAVAILABLE`(503)는 실행 파일 또는 한국어/영어 모델 미설치, `DOCUMENT_OCR_TIMEOUT`/`DOCUMENT_TIMEOUT`(504)는 시간 초과, `DOCUMENT_OCR_FAILED`(400)는 인식 실행 실패입니다. 이 경우 일부 페이지만 추출된 초안을 성공으로 반환하지 않습니다.
+
+Ubuntu 신규 호스트는 `deploy/bootstrap.sh`가 의존성을 설치합니다. **기존 호스트는 배포 전에** 아래 패키지를 설치해야 하며, 배포 preflight가 누락을 감지하면 현재 서비스를 중단하기 전에 실패합니다.
+
+```bash
+sudo apt-get update
+sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-kor tesseract-ocr-eng
+tesseract --list-langs  # kor, eng 확인
+```
+
+macOS 개발 환경은 `brew install poppler tesseract tesseract-lang`을 사용합니다. 별도 모델 경로는 Tesseract의 `TESSDATA_PREFIX`로 지정할 수 있습니다. 운영 프로세스가 해당 경로를 읽을 수 있어야 합니다.
+
+- [Tesseract 다국어 실행 문서](https://tesseract-ocr.github.io/tessdoc/Command-Line-Usage.html)
+- [Poppler 렌더링 옵션](https://manpages.debian.org/bookworm/poppler-utils/pdftoppm.1.en.html)
 
 모델은 현재 질문 생성의 제공사·모델·자격 증명 설정을 재사용합니다(Bedrock IAM 역할 또는 OpenAI 키). 규칙 추출은 별도 `PolicyExtractor` 경계이며 미설정/지원하지 않는 제공사는 `503 POLICY_EXTRACTION_NOT_CONFIGURED`로 명시합니다. Bedrock은 기존 Converse 호출 모듈을 재사용하며 배포·제공사 설정을 변경하지 않습니다. 모델 호출은 사용자별 분당 10회이며 실패도 포함합니다. `POLICY_EXTRACTION_INVALID/INCOMPLETE/REFUSED`(502), `POLICY_EXTRACTION_TIMEOUT`(504)를 구분합니다. 원문 인용은 공백 차이만 실제 원문으로 복원하며, 문서에 없는 근거나 중복 key는 저장 없이 거절합니다. 생성 결과의 의미적 적합성은 사용자가 검토해야 합니다.
 

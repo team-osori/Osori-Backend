@@ -94,14 +94,16 @@ def test_upload_auth_type_and_resource_limits(db_and_client):
     assert extractor.calls == 0
 
 
-def test_scanned_and_encrypted_pdf_are_explicit_errors():
+def test_empty_and_encrypted_pdf_are_explicit_errors(monkeypatch, tmp_path):
+    from app.services import policy_documents, policy_ocr
+    monkeypatch.setattr(policy_ocr, 'check_ocr_runtime', lambda: None)
+    monkeypatch.setattr(policy_ocr, 'ocr_page', lambda *args: '')
     writer = PdfWriter()
     writer.add_blank_page(100, 100)
     out = io.BytesIO()
     writer.write(out)
-    with pytest.raises(ApiError) as caught:
-        extract_document(out.getvalue(), 'scan.pdf')
-    assert caught.value.code == 'DOCUMENT_TEXT_NOT_FOUND'
+    with pytest.raises(ValueError, match='DOCUMENT_TEXT_NOT_FOUND'):
+        policy_documents.document_output(policy_documents.parse_document(out.getvalue(), '.pdf', tmp_path))
     writer.encrypt('not-a-real-secret')
     out = io.BytesIO()
     writer.write(out)
