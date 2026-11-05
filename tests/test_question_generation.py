@@ -110,3 +110,36 @@ def test_http_errors_do_not_read_or_expose_provider_body(monkeypatch, status, co
     with pytest.raises(ApiError) as caught:
         asyncio.run(OpenAIQuestionGenerator('secret')._request({}))
     assert caught.value.code == code
+
+
+@pytest.mark.parametrize('provider', ['openai', 'bedrock'])
+def test_provider_receives_exact_counts_and_validates_distribution(monkeypatch, provider):
+    from app.services.bedrock_ai import BedrockQuestionGenerator
+    from app.services import bedrock_runtime
+    counts = {'normal': 1, 'missing_document': 2, 'policy_trap': 0}
+    questions = [candidate('normal'), candidate('missing_document'),
+                 {**candidate('missing_document'), 'question': '다른 질문'}]
+    observed = []
+
+    async def request(body):
+        observed.append(json.loads(body['input'][0]['content']))
+        return completed(questions)
+
+    def converse(**kwargs):
+        observed.append(kwargs['payload'])
+        return {'questions': questions}
+
+    if provider == 'openai':
+        generator = OpenAIQuestionGenerator('offline-key')
+        monkeypatch.setattr(generator, '_request', request)
+    else:
+        generator = BedrockQuestionGenerator('offline-model', 'offline-region')
+        monkeypatch.setattr(bedrock_runtime, 'converse_json', converse)
+    result = generator.generate(policies=[], count=3, category_counts=counts)
+    assert len(result.questions) == 3
+    assert observed[0]['categoryCounts'] == counts
+    assert observed[0]['categories'] == ['normal', 'missing_document']
+    questions[1] = {**candidate('normal'), 'question': '두 번째 정상'}
+    with pytest.raises(ApiError) as caught:
+        generator.generate(policies=[], count=3, category_counts=counts)
+    assert caught.value.code == 'GENERATION_CATEGORY_COUNT_MISMATCH'
