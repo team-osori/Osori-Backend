@@ -163,6 +163,8 @@ class EvaluationItemResponse(EvaluationItemSummary):
     a: EvaluationSide | None
     b: EvaluationSide | None
     analysis: dict = {}
+    reviewRevision: int = 0
+    latestReviews: list[dict] = []
 
 
 class EvaluationInputs(BaseModel):

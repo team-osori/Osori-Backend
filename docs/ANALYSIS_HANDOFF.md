@@ -90,3 +90,23 @@ hasJudgmentError/needsReview를 같이 표시한다. API 실패는 답변 미충
 
 limitations는 검색 자료 미제공, 프롬프트 내부·적용 확인 불가, 외부 모델 설정 미확인,
 통제된 원인 분리 실험 미실시 등을 나타내는 코드 목록이다. 미수집 정보로 특정 구성 요소의 실패를 확정하지 않는다.
+
+## 문항 상세의 담당자 판정
+
+`POST .../evaluations/{evaluationId}/items/{itemId}/reviews`에 다음 본문을 전달한다.
+
+```json
+{"expectedRevision":0,"side":"a","conditionId":"실제-조건-ID","verdict":"pass","reason":"담당자 판정 이유"}
+```
+
+verdict는 pass/fail/not_evaluable다. 종료한 실행에서 실제 답변이 있는 조건에만 기록한다.
+동시 수정은 문항의 reviewRevision으로 검사하고 충돌하면 409 REVISION_CONFLICT다.
+수정은 새 기록으로 추가되며 원래 AI 판정과 이유를 덮어쓰지 않는다.
+`GET .../items/{itemId}/reviews`는 모든 검토 이력을 커서로 조회한다.
+
+문항 상세는 reviewRevision, latestReviews, analysis.conditions[].automaticJudgment와
+최신 담당자 판정을 반영한 judgment를 함께 제공한다. 요약의 analysis와 문항 대표 상태에는
+최신 담당자 조건 판정을 반영한다. 기존 criteria 통과율·점수는 AI 원본 집계이며
+criterionPassRatesBasis=AUTOMATIC으로 명시한다. 사람이 통과로 바꿨다고 새 AI 점수를 만들어내지 않는다.
+원인 분석의 관측 자료와 AI 가설은 자동 분석 당시 자료를 유지한다.
+DB 마이그레이션 20261105_08을 적용해야 한다.
