@@ -280,7 +280,10 @@ async def process_item(factory, run_id, token, item_id, inputs, secret, judge, s
 
 async def process_items(factory, run_id, token, item_ids, inputs, secret, judge, sender, stop_event):
     """Fill a bounded worker pool without starting queued items after an abrupt failure."""
-    semaphore = asyncio.Semaphore(item_concurrency())
+    configured = item_concurrency()
+    # A provider's SDK budget can be smaller than the configured company-call pool.
+    concurrency = min(configured, getattr(judge, 'max_item_concurrency', configured))
+    semaphore = asyncio.Semaphore(concurrency)
     pending_ids = iter(item_ids)
     tasks = set()
     results = []
@@ -294,7 +297,7 @@ async def process_items(factory, run_id, token, item_ids, inputs, secret, judge,
                                                    semaphore, stop_event)))
         return True
 
-    while len(tasks) < item_concurrency() and start_next():
+    while len(tasks) < concurrency and start_next():
         pass
     halted = False
     while tasks:
@@ -310,7 +313,7 @@ async def process_items(factory, run_id, token, item_ids, inputs, secret, judge,
                 raise
         if any(result in ('aborted', 'stopped') for result in results):
             halted = True
-        while not halted and len(tasks) < item_concurrency() and start_next():
+        while not halted and len(tasks) < concurrency and start_next():
             pass
     return results
 

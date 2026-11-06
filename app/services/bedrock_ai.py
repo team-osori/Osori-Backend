@@ -160,6 +160,8 @@ def judgement_problems(error):
 
 class BedrockEvaluationJudge:
     """Collect structured verdicts without blocking the asynchronous evaluation worker."""
+    # Match bedrock_runtime's process-wide single unfinished SDK call budget.
+    max_item_concurrency = 1
     # Up to JUDGE_ATTEMPTS model calls per answer.
     timeout_seconds = 330
 
